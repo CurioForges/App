@@ -1,0 +1,9 @@
+node_modules/
+dist/
+src-tauri/target/
+tmp/
+.playwright-cli/
+src-tauri/gen/
+src-tauri/icons/*
+!src-tauri/icons/icon.png
+!src-tauri/icons/icon.ico

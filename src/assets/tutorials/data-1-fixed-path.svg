@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="#23382f" viewBox="0 0 560 300" role="img" aria-label="发行包固定使用安装目录下的 data">
+  <defs>
+    <style>
+      .t{font-family:"Inter","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif}
+      .m{font-family:"SFMono-Regular",Consolas,monospace}
+      .card{fill:#fffefa;stroke:#dedfd5;stroke-width:1.2}
+    </style>
+  </defs>
+  <rect width="560" height="300" rx="10" fill="#f6f5f1"/>
+  <text x="28" y="34" class="t" font-size="12" font-weight="600">发行包只认安装目录下的这一个路径</text>
+  <text x="28" y="54" class="t" font-size="9.5" fill="#798078">它不是配置项：域代码直接拼 ATELIER_ROOT/data，所以启动器不去改它。</text>
+
+  <rect x="28" y="70" width="330" height="196" rx="9" class="card"/>
+  <text x="44" y="92" class="t m" font-size="9.5" fill="#798078">%LOCALAPPDATA%\AtelierFree</text>
+  <line x1="28" y1="102" x2="358" y2="102" stroke="#dedfd5"/>
+  <g class="t m" font-size="10.5">
+    <text x="44" y="128">atelier-kernel.exe</text>
+    <text x="44" y="152" fill="#798078">atelier-web.exe</text>
+    <text x="44" y="176" fill="#798078">dist/</text>
+    <text x="44" y="200" fill="#798078">engine-root/</text>
+    <text x="44" y="224">kernel_boot.json</text>
+  </g>
+  <rect x="36" y="234" width="230" height="24" rx="5" fill="#e4eddf"/>
+  <text x="48" y="250" class="t m" font-size="10" font-weight="600" fill="#386a50">data/</text>
+  <text x="100" y="250" class="t" font-size="9" fill="#386a50">任务、数据库、管线产物</text>
+
+  <g class="t" font-size="9.5">
+    <text x="384" y="120" font-weight="600">这一层不能挪</text>
+    <text x="384" y="140" fill="#798078">内核按配置文件所在目录</text>
+    <text x="384" y="156" fill="#798078">推导每个域的工作目录，</text>
+    <text x="384" y="172" fill="#798078">所以 data/ 必须留在这里。</text>
+    <text x="384" y="200" font-weight="600">但它可以是一条</text>
+    <text x="384" y="216" font-weight="600">指向别处的联接</text>
+    <text x="384" y="236" fill="#798078">下一步说明怎么指。</text>
+  </g>
+</svg>

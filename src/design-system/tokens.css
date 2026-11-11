@@ -1,0 +1,20 @@
+:root{--text-small:12px;--text-body:14px;color-scheme:light;--bg:#f6f5f1;--surface:#fffefa;--surface-alt:#eeeee7;--ink:#23382f;--muted:#798078;--line:#dedfd5;--accent:#386a50;--accent-hover:#29563e;--accent-soft:#e4eddf;--danger:#b65c47;--warning:#98783a;--radius:12px;--space-unit:4px;--shadow:0 10px 32px #263b2b0b;--font:"Inter","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;--mono:"SFMono-Regular",Consolas,monospace}
+:root{
+  --text-title-small:16px;
+  --text-title:18px;
+  --space-half:calc(var(--space-unit) / 2);
+  --space-1:var(--space-unit);
+  --space-1-5:calc(var(--space-unit) * 1.5);
+  --space-2:calc(var(--space-unit) * 2);
+  --space-2-5:calc(var(--space-unit) * 2.5);
+  --space-3:calc(var(--space-unit) * 3);
+  --space-4:calc(var(--space-unit) * 4);
+  --space-5:calc(var(--space-unit) * 5);
+  --space-6:calc(var(--space-unit) * 6);
+  --space-8:calc(var(--space-unit) * 8);
+  --radius-xs:calc(var(--radius) / 3);
+  --radius-sm:calc(var(--radius) / 2);
+  --radius-md:calc(var(--radius) * 2 / 3);
+  --radius-pill:999px;
+}
+:root[data-theme=dark]{color-scheme:dark;--bg:#18241e;--surface:#202e26;--surface-alt:#29382d;--ink:#e6eadf;--muted:#a2ad9f;--line:#3a493d;--accent:#9cbe95;--accent-hover:#b3d4ac;--accent-soft:#344c37;--danger:#e19a85;--warning:#d3b77a;--shadow:0 10px 32px #0002}

@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="#23382f" viewBox="0 0 400 300" role="img" aria-label="Access Tokens 页面上的 New token 按钮">
+  <defs>
+    <style>
+      .t{font-family:"Inter","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif}
+      .m{font-family:"SFMono-Regular",Consolas,monospace}
+      .inverse{fill:#fffefa}
+    </style>
+  </defs>
+  <rect width="400" height="300" rx="10" fill="#f6f5f1"/>
+  <rect x="10" y="10" width="380" height="280" rx="8" fill="#fffefa" stroke="#dedfd5" stroke-width="1.2"/>
+  <path d="M10 18a8 8 0 0 1 8-8h364a8 8 0 0 1 8 8v20H10z" fill="#eeeee7"/>
+  <circle cx="24" cy="24" r="3.4" fill="#dedfd5"/><circle cx="36" cy="24" r="3.4" fill="#dedfd5"/><circle cx="48" cy="24" r="3.4" fill="#dedfd5"/>
+  <rect x="60" y="16" width="190" height="16" rx="8" fill="#fffefa" stroke="#dedfd5"/>
+  <text x="70" y="28" class="t m" font-size="8.5" fill="#798078">huggingface.co/settings/tokens</text>
+
+  <rect x="18" y="44" width="86" height="238" fill="#f6f5f1"/>
+  <g class="t" font-size="8.5">
+    <text x="28" y="66" fill="#798078">Profile</text>
+    <text x="28" y="86" fill="#798078">Account</text>
+    <rect x="23" y="93" width="76" height="20" rx="4" fill="#e4eddf"/>
+    <text x="28" y="107" font-weight="600" fill="#386a50">Access Tokens</text>
+    <text x="28" y="127" fill="#798078">Billing</text>
+    <text x="28" y="147" fill="#798078">Notifications</text>
+  </g>
+  <line x1="104" y1="44" x2="104" y2="282" stroke="#dedfd5"/>
+
+  <text x="118" y="68" class="t" font-size="11" font-weight="600">Access Tokens</text>
+  <text x="118" y="84" class="t" font-size="8" fill="#798078">Manage your personal access tokens.</text>
+
+  <rect x="118" y="96" width="254" height="82" rx="7" fill="#fffefa" stroke="#dedfd5"/>
+  <text x="130" y="114" class="t" font-size="9" font-weight="600">Personal access tokens</text>
+  <rect x="292" y="102" width="68" height="20" rx="5" fill="#386a50"/>
+  <text x="326" y="116" class="t inverse" font-size="8.5" text-anchor="middle" font-weight="600">New token</text>
+  <g class="t" font-size="8.5">
+    <text x="130" y="140" class="m">atelier-weights</text>
+    <rect x="214" y="131" width="28" height="12" rx="3" fill="#e4eddf"/>
+    <text x="228" y="140" font-size="7" fill="#386a50" text-anchor="middle">read</text>
+  </g>
+  <line x1="130" y1="150" x2="360" y2="150" stroke="#dedfd5" stroke-dasharray="3 3"/>
+  <text x="130" y="166" class="t" font-size="8" fill="#798078">列表为空也没关系，点右上角新建。</text>
+
+  <rect x="286" y="96" width="80" height="32" rx="7" fill="none" stroke="#386a50" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <path d="M326 90 V84" stroke="#386a50" stroke-width="1.4" stroke-dasharray="3 3" fill="none"/>
+  <text x="136" y="206" class="t" font-size="9" fill="#798078">左侧菜单进 Access Tokens，</text>
+  <text x="136" y="222" class="t" font-size="9" fill="#798078">右上绿色按钮就是入口。</text>
+</svg>

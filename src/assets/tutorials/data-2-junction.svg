@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="#23382f" viewBox="0 0 560 300" role="img" aria-label="data 建成联接后指向用户选择的目录">
+  <defs>
+    <style>
+      .t{font-family:"Inter","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif}
+      .m{font-family:"SFMono-Regular",Consolas,monospace}
+      .card{fill:#fffefa;stroke:#dedfd5;stroke-width:1.2}
+    </style>
+  </defs>
+  <rect width="560" height="300" rx="10" fill="#f6f5f1"/>
+  <text x="28" y="34" class="t" font-size="12" font-weight="600">启动器在原位置做一条联接，指向你选的目录</text>
+  <text x="28" y="54" class="t" font-size="9.5" fill="#798078">不复制、不移动数据：写入穿过联接落到右边，路径仍然叫 ATELIER_ROOT/data。</text>
+
+  <rect x="28" y="82" width="150" height="96" rx="9" class="card"/>
+  <text x="42" y="104" class="t" font-size="9.5" fill="#798078">安装目录</text>
+  <rect x="36" y="116" width="134" height="26" rx="5" fill="#e4eddf"/>
+  <text x="48" y="133" class="t m" font-size="10.5" font-weight="600" fill="#386a50">data/</text>
+  <text x="42" y="162" class="t" font-size="8.5" fill="#798078">只是一个联接，不存文件</text>
+
+  <path d="M182 130 H244" stroke="#386a50" stroke-width="1.6" stroke-dasharray="6 4" fill="none"/>
+  <path d="M238 124 L248 130 L238 136" fill="none" stroke="#386a50" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="215" y="120" class="t" font-size="9" font-weight="600" fill="#386a50" text-anchor="middle">联接</text>
+
+  <rect x="258" y="70" width="274" height="196" rx="9" class="card"/>
+  <text x="274" y="92" class="t m" font-size="9.5" fill="#798078">D:\Atelier\Data</text>
+  <line x1="258" y1="102" x2="532" y2="102" stroke="#dedfd5"/>
+  <g class="t m" font-size="10.5">
+    <text x="274" y="128">atelier_kernel.db</text>
+    <text x="274" y="154" fill="#798078">pipelines/jobs/</text>
+    <text x="274" y="180" fill="#798078">checkpoints/</text>
+    <text x="274" y="206" fill="#798078">logs/</text>
+  </g>
+  <rect x="266" y="224" width="256" height="30" rx="5" fill="#f6f5f1"/>
+  <text x="278" y="243" class="t" font-size="9" fill="#798078">备份、迁移、换盘，只需要搬这个目录。</text>
+
+  <g class="t" font-size="9" fill="#b65c47">
+    <text x="28" y="204">如果原 data/ 里</text>
+    <text x="28" y="220">已经有数据，</text>
+    <text x="28" y="236">启动器会拒绝搬迁，</text>
+    <text x="28" y="252">只提示你先手动移走。</text>
+  </g>
+</svg>

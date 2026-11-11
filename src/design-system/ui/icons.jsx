@@ -1,0 +1,7 @@
+import React,{useEffect,useId,useRef,useState} from 'react';
+
+
+export function Icon({ name = 'grid', size = 18 }) {
+  const p = { grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',plus:'M12 5v14 M5 12h14',search:'M21 21l-5-5 M18 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0',arrow:'M5 12h14 M13 6l6 6-6 6',check:'M5 12l4 4L19 6',close:'M6 6l12 12 M18 6L6 18',sun:'M12 3v2 M12 19v2 M3 12h2 M19 12h2 M5 5l2 2 M17 17l2 2 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',moon:'M20 15A9 9 0 0 1 9 3 9 9 0 1 0 20 15',layers:'M12 3L2 8l10 5 10-5z M2 12l10 5 10-5 M2 16l10 5 10-5',image:'M3 3h18v18H3z M3 16l6-6 5 5 3-3 4 4 M16 7h.01',user:'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M4 21v-2a8 8 0 0 1 16 0v2',code:'M8 5l-6 7 6 7 M16 5l6 7-6 7 M14 3l-4 18',sliders:'M4 7h16 M4 17h16 M8 4v6 M16 14v6',play:'M8 4l12 8-12 8z',upload:'M12 16V3 M7 8l5-5 5 5 M4 15v6h16v-6',chevron:'M9 5l7 7-7 7',clock:'M12 7v5l3 2 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',heart:'M20 5c-3-3-6 0-8 2-2-2-5-5-8-2-5 5 4 11 8 15 4-4 13-10 8-15',folder:'M3 5h7l2 3h9v12H3z',bell:'M5 17h14l-2-3V9a5 5 0 0 0-10 0v5z M10 21h4',book:'M3 4h7l2 2 2-2h7v16h-7l-2 2-2-2H3z M12 6v16' };
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={p[name] || p.grid}/></svg>;
+}

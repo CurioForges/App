@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="#23382f" viewBox="0 0 400 300" role="img" aria-label="受限仓库需要先同意许可">
+  <defs>
+    <style>
+      .t{font-family:"Inter","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif}
+      .m{font-family:"SFMono-Regular",Consolas,monospace}
+      .inverse{fill:#fffefa}
+    </style>
+  </defs>
+  <rect width="400" height="300" rx="10" fill="#f6f5f1"/>
+  <rect x="10" y="10" width="380" height="280" rx="8" fill="#fffefa" stroke="#dedfd5" stroke-width="1.2"/>
+  <path d="M10 18a8 8 0 0 1 8-8h364a8 8 0 0 1 8 8v20H10z" fill="#eeeee7"/>
+  <circle cx="24" cy="24" r="3.4" fill="#dedfd5"/><circle cx="36" cy="24" r="3.4" fill="#dedfd5"/><circle cx="48" cy="24" r="3.4" fill="#dedfd5"/>
+  <rect x="60" y="16" width="210" height="16" rx="8" fill="#fffefa" stroke="#dedfd5"/>
+  <text x="70" y="28" class="t m" font-size="8" fill="#798078">huggingface.co/pyannote/speaker-diarization-3.1</text>
+
+  <text x="22" y="56" class="t" font-size="10" font-weight="700">pyannote/speaker-diarization-3.1</text>
+  <rect x="238" y="46" width="38" height="13" rx="3" fill="#eeeee7"/>
+  <text x="257" y="55" class="t" font-size="7" text-anchor="middle" fill="#98783a">gated</text>
+  <g class="t" font-size="8.5" fill="#798078">
+    <text x="22" y="74">Model card</text>
+    <text x="78" y="74">Files and versions</text>
+    <text x="176" y="74">Community</text>
+  </g>
+  <line x1="22" y1="80" x2="378" y2="80" stroke="#dedfd5"/>
+  <line x1="22" y1="80" x2="70" y2="80" stroke="#386a50" stroke-width="1.6"/>
+
+  <rect x="22" y="90" width="356" height="94" rx="7" fill="#fffefa" stroke="#dedfd5" stroke-dasharray="4 3"/>
+  <text x="34" y="108" class="t" font-size="8.5" font-weight="600">You need to agree to share your contact</text>
+  <text x="34" y="120" class="t" font-size="8.5" font-weight="600">information to access this model</text>
+  <text x="34" y="136" class="t" font-size="7.5" fill="#798078">Accept the conditions to access its files.</text>
+  <rect x="34" y="146" width="150" height="22" rx="5" fill="#386a50"/>
+  <text x="109" y="161" class="t inverse" font-size="8" text-anchor="middle" font-weight="600">Agree and access repository</text>
+  <rect x="28" y="140" width="162" height="34" rx="8" fill="none" stroke="#386a50" stroke-width="1.4" stroke-dasharray="4 3"/>
+
+  <g class="t" font-size="8.5">
+    <text x="22" y="208" font-weight="600">每个受限仓库都要单独同意一次</text>
+    <text x="22" y="224" fill="#798078">必须用和创建令牌时相同的账号，</text>
+    <text x="22" y="238" fill="#798078">同意后对该账号长期生效。</text>
+  </g>
+  <g class="t m" font-size="7.5" fill="#798078">
+    <text x="22" y="260">pyannote/speaker-diarization-3.1</text>
+    <text x="196" y="260">pyannote/segmentation-3.0</text>
+    <text x="22" y="272">pyannote/wespeaker-voxceleb-resnet34-LM</text>
+  </g>
+  <rect x="292" y="204" width="96" height="32" rx="5" fill="#fbf0ec"/>
+  <text x="340" y="217" class="t" font-size="7.5" fill="#b65c47" text-anchor="middle" font-weight="600">漏掉这一步</text>
+  <text x="340" y="228" class="t" font-size="7.5" fill="#b65c47" text-anchor="middle">下载会返回 403</text>
+</svg>

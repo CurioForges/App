@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="#23382f" viewBox="0 0 560 300" role="img" aria-label="权重目录下的缓存结构与体量参考">
+  <defs>
+    <style>
+      .t{font-family:"Inter","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif}
+      .m{font-family:"SFMono-Regular",Consolas,monospace}
+      .card{fill:#fffefa;stroke:#dedfd5;stroke-width:1.2}
+    </style>
+  </defs>
+  <rect width="560" height="300" rx="10" fill="#f6f5f1"/>
+  <text x="28" y="34" class="t" font-size="12" font-weight="600">目录里按来源分缓存，所有引擎共用同一份</text>
+  <text x="28" y="54" class="t" font-size="9.5" fill="#798078">HF、torch、pyannote、ModelScope、Paddle 各自建子目录，不会重复下载。</text>
+
+  <rect x="28" y="72" width="248" height="196" rx="9" class="card"/>
+  <text x="44" y="94" class="t m" font-size="9.5" fill="#798078">你选择的权重目录\</text>
+  <line x1="28" y1="104" x2="276" y2="104" stroke="#dedfd5"/>
+  <g class="t m" font-size="10.5">
+    <text x="44" y="130">hf_cache/</text>
+    <text x="44" y="154">torch_cache/</text>
+    <text x="44" y="178">nemo_cache/</text>
+    <text x="44" y="202">modelscope/</text>
+    <text x="44" y="226">paddlex/</text>
+    <text x="44" y="250">beats/</text>
+  </g>
+
+  <g class="t" font-size="9.5">
+    <text x="296" y="94" font-weight="600">体量参考</text>
+  </g>
+  <g class="t" font-size="9">
+    <text x="296" y="116" fill="#798078">单个 ASR / 声纹模型</text>
+    <text x="500" y="116" fill="#23382f" text-anchor="end">数百 MB</text>
+    <line x1="296" y1="126" x2="532" y2="126" stroke="#dedfd5" stroke-dasharray="3 3"/>
+    <text x="296" y="144" fill="#798078">视频翻译全链路</text>
+    <text x="500" y="144" fill="#23382f" text-anchor="end">20–40 GB</text>
+    <line x1="296" y1="154" x2="532" y2="154" stroke="#dedfd5" stroke-dasharray="3 3"/>
+    <text x="296" y="172" fill="#798078">图像 / 扩散类引擎</text>
+    <text x="500" y="172" fill="#23382f" text-anchor="end">再数十 GB</text>
+  </g>
+
+  <rect x="296" y="192" width="236" height="76" rx="7" fill="#e4eddf"/>
+  <text x="310" y="212" class="t" font-size="9" font-weight="600" fill="#386a50">换目录不会自动搬走旧权重</text>
+  <text x="310" y="230" class="t" font-size="8.5" fill="#386a50">改之前先把旧内容复制过去，</text>
+  <text x="310" y="246" class="t" font-size="8.5" fill="#386a50">否则会重新下载一遍。</text>
+</svg>

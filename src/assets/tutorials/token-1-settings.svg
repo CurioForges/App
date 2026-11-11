@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="#23382f" viewBox="0 0 400 300" role="img" aria-label="登录后从头像菜单进入 Settings">
+  <defs>
+    <style>
+      .t{font-family:"Inter","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif}
+      .m{font-family:"SFMono-Regular",Consolas,monospace}
+    </style>
+  </defs>
+  <rect width="400" height="300" rx="10" fill="#f6f5f1"/>
+  <rect x="10" y="10" width="380" height="280" rx="8" fill="#fffefa" stroke="#dedfd5" stroke-width="1.2"/>
+  <path d="M10 18a8 8 0 0 1 8-8h364a8 8 0 0 1 8 8v20H10z" fill="#eeeee7"/>
+  <circle cx="24" cy="24" r="3.4" fill="#dedfd5"/><circle cx="36" cy="24" r="3.4" fill="#dedfd5"/><circle cx="48" cy="24" r="3.4" fill="#dedfd5"/>
+  <rect x="60" y="16" width="150" height="16" rx="8" fill="#fffefa" stroke="#dedfd5"/>
+  <text x="70" y="28" class="t m" font-size="8.5" fill="#798078">huggingface.co</text>
+
+  <text x="24" y="60" class="t" font-size="10.5" font-weight="700">Hugging Face</text>
+  <circle cx="356" cy="54" r="11" fill="#e4eddf"/>
+  <circle cx="356" cy="54" r="11" fill="none" stroke="#386a50" stroke-width="1.3"/>
+  <text x="356" y="58" class="t" font-size="9" text-anchor="middle" font-weight="600" fill="#386a50">A</text>
+  <line x1="20" y1="74" x2="380" y2="74" stroke="#dedfd5"/>
+
+  <g fill="#eeeee7">
+    <rect x="24" y="92" width="200" height="8" rx="4"/>
+    <rect x="24" y="110" width="150" height="8" rx="4"/>
+    <rect x="24" y="128" width="178" height="8" rx="4"/>
+    <rect x="24" y="152" width="120" height="8" rx="4"/>
+    <rect x="24" y="170" width="160" height="8" rx="4"/>
+    <rect x="24" y="194" width="140" height="8" rx="4"/>
+    <rect x="24" y="212" width="176" height="8" rx="4"/>
+  </g>
+
+  <path d="M356 66 V80" stroke="#386a50" stroke-width="1.4" stroke-dasharray="4 3" fill="none"/>
+  <path d="M351 77 L356 83 L361 77" fill="none" stroke="#386a50" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="256" y="86" width="124" height="112" rx="7" fill="#fffefa" stroke="#dedfd5" stroke-width="1.2"/>
+  <g class="t" font-size="9.5">
+    <text x="268" y="106">Your profile</text>
+    <rect x="262" y="114" width="112" height="20" rx="4" fill="#e4eddf"/>
+    <text x="268" y="128" font-weight="600" fill="#386a50">Settings</text>
+    <text x="268" y="148" fill="#798078">Organization</text>
+    <line x1="266" y1="156" x2="370" y2="156" stroke="#dedfd5"/>
+    <text x="268" y="172" fill="#798078">Sign out</text>
+  </g>
+  <rect x="252" y="82" width="132" height="120" rx="9" fill="none" stroke="#386a50" stroke-width="1.4" stroke-dasharray="4 3"/>
+</svg>
