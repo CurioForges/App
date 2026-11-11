@@ -1,6 +1,6 @@
 # Atelier 桌面启动器 —— 交接文档
 
-> 更新时间：2026-11-11
+> 更新时间：2026-11-12
 > 仓库：`G:\Atelier\Atelier`（Tauri 2 + React 19，Rust 后端）
 > 上一份交接：`G:\Atelier\atelier-free\docs\HANDOFF-LAUNCHER.md`（发行包侧，仍然有效）
 
@@ -11,8 +11,9 @@
 启动器已经能装、起、停 Atelier Free，首启三步引导可用，主界面是**域能力面板（只读状态）**，
 设置分全局/安装两层。构建与测试干净（Rust 17 项、前端 2 项）。
 
-**验收版本：v0.1.9**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
-Windows 分段下载、安装器编码四处缺陷已修，见 §7.1–§7.3）。
+**验收版本：v0.1.13**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
+Windows 分段下载、安装器编码四处缺陷已修，见 §7.1–§7.3；视频管线 S03 的 `Expected str, got VPath`
+已定位为 Cython 注解 dict 类型校验并修复，见 §7.4）。
 
 ---
 
@@ -117,7 +118,7 @@ src/
 | 优先级 | 事项 | 位置 |
 | :-- | :-- | :-- |
 | 高 | **启动器自更新**：版本源 `NomadAnget/Atelier` 的 release → 下载 exe → sha256 → `apply-update.ps1` 换文件（保留 `.old` 回滚） | 更新链路其余部分已完成：逐域下载/校验/暂存/原子换入/自动启动/预热/实时速率/环形进度覆盖层 |
-| 高 | **视频管线 S03 崩溃**：`Expected str, got VPath`（分类头修好后暴露出来） | `atelier-pipeline-video` 的 `steps/s03_asr.py`：`ctx.vdir()` 返回 VPath 却直接当 `input_data` 传给 `engines.LangIdEngine`（L166），同文件 L89/L100/L181/L204 同病；建议在 `ctx.call_engine` 序列化边界统一转原生路径 |
+| ✅ | **视频管线 S03 崩溃已修**：`Expected str, got VPath` | 真因不是引擎边界，而是 Cython 对 `rep_clip: dict[str, str]` 的注解类型校验；已改为 `dict[str, Any]`（`atelier-pipeline-video` `6895f7f`，随 AtelierFree v0.1.13 发布），详见 §7.4 |
 | 中 | 远端可售管线目录（用户已定方案 B） | `settings.shared.catalog_url` 已留字段；需拉取 + 缓存 `catalog.json` + 离线兜底（拉不到就只显示已装） |
 | 中 | 授权/付费流程 | `catalog::licensed()` |
 | 低 | 离线权重包 `AtelierFree-offline-models-<ver>.zip`（把 `atelier-models` 的资产打进一个可选包，给断网机器） | 组装 workflow 加一个 flag；主包仍不带权重 |
@@ -194,6 +195,44 @@ engines artifact 每次 12–15 分钟。发布前必须确认五个域分支 HE
 `is_paid`/`pipeline_dir`、死 CSS `.cap-toggle/.cap-switch`、死组件 `SwitchCtl`、
 `variant-catalog.mjs` 与 `variant-store.mjs`（连同它的测试）、README 里过时的变体页描述。
 编译零警告，前端测试换成了守着引导页顺序的 `tests/setup-steps.test.mjs`。
+
+### 7.4 S03 `Expected str, got VPath` 的真因（2026-11-12，已修）
+
+**现象**：视频任务跑到 S03 语言识别（进度 42.25%）失败，scheduler 记 `err=Expected str, got VPath`，S03 最后一条日志是 `S03 送识别:单独 N 个,长段单元 M 个`。
+
+**先前的错误判断**（已作废）：以为 `ctx.vdir()` 返回的 VPath 被直接当 `input_data` 传给了
+`engines.LangIdEngine`，建议在 `ctx.call_engine` 序列化边界统一转原生路径。该判断不成立——
+错误发生在 `call_engine` **实参求值阶段**，C4 编码、引擎域、消息总线都还没参与。
+
+**真因**：Cython 3 的 `annotation_typing` 会对**注解为内建标量容器的下标读取**做类型校验。
+
+```python
+rep_clip: dict[str, str] = {}       # s03_asr.py:138
+rep_clip[tid] = lid                 # 实际存的是 VPath（ctx.vdir() / asd_dir 组合）
+... 'input_data': rep_clip[tid]     # 读这一下就抛 TypeError
+```
+
+最小复现（Cython 3.3.1）：
+
+| 写法 | 结果 |
+| :-- | :-- |
+| `d: dict[str, str]` 存入非 str，赋值 | 不报 |
+| 同上，`d["x"]` **读取** | `TypeError: Expected str, got <类型>` |
+| 同上，`.items()` / `.values()` | 不校验 |
+| `d: dict[str, Path]` 存入非 Path，读取 | 不校验（只校验内建标量） |
+
+**修法**：`rep_clip: dict[str, Any] = {}`（一行），提交 `atelier-pipeline-video@6895f7f`，
+video artifact 重建后随 AtelierFree **v0.1.13** 发布。修完在本地用同一编译插件 + 假 StepContext
+验证：越过了 166 行，`LangIdEngine` 收到的 `input_data` 是 VPath，后续由 C4 正常编码。
+
+**为什么不选当时列的两个方案**：
+
+- 方案 A（在 `ctx.call_engine` 里把所有 VPath 转原生路径）：修不到这个 bug，而且会破坏
+  `output` / `outputs` / `output_paths` 依赖 C4 引用建对象、回传 `{owner, virtual_path, physical_path}` 的语义。
+- 方案 B（S03 里 5 处 `str(fs.native(...))`）：能绕开，但只是掩盖，且丢掉 VPath 的 C4 语义。
+
+**同类隐患**：凡是注解成 `dict[str, str]`（或其它内建标量）却存放 VPath / Path 的变量，都会在下标读取时
+抛这个错；S02 的 `dict[str, Path]` 不受影响（Path 不是内建标量）。
 
 ---
 
