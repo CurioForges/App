@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {invoke} from '@tauri-apps/api/core';
 import {listen} from '@tauri-apps/api/event';
@@ -10,6 +10,7 @@ import {DropdownMenu} from './design-system/ui/DropdownMenu';
 import {Icon} from './design-system/ui/icons';
 import {AtelierBrand} from './design-system/AtelierBrand';
 import {Setup} from './views/Setup';
+import {DinoGame} from './DinoGame';
 import freeMark from './assets/atelier-mark.svg';
 import './design-system/tokens.css';
 import './design-system/styles/base.css';
@@ -45,11 +46,61 @@ function DomainRow({domain, onUnlock}) {
   </div>;
 }
 
-/** Full-card overlay while the installer runs. `percent: null` means "unknown": spinner, no number. */
+/** 卡片头部那条占用比例条:三段落,文本贴在段内,太窄时逐级收缩,0 段不渲染。 */
+function formatBytes(bytes) {
+  const mb = bytes / 1048576;
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  if (mb >= 10) return `${Math.round(mb)} MB`;
+  return `${mb.toFixed(1)} MB`;
+}
+
+function StorageBar({usage}) {
+  const ref = useRef(null);
+  const [width, setWidth] = useState(0);
+  const total = usage?.total || 0;
+  const segments = (usage?.segments || []).filter(segment => segment.bytes > 0 && total > 0);
+
+  // 段的实际像素宽度随窗口变化:按实测宽度决定文本露出几段,保证绝不越过区间边界。
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const read = () => setWidth(node.clientWidth);
+    read();
+    const observer = new ResizeObserver(read);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [segments.length, total]);
+
+  if (!usage || (segments.length === 0 && !usage.scanning)) return null;
+  if (segments.length === 0) {
+    return <div className="storage-bar is-scanning" role="status" title="正在统计三个目录的占用"><span>统计中…</span></div>;
+  }
+  return <div className={`storage-bar ${usage.scanning ? 'is-stale' : ''}`} ref={ref} role="img"
+    title={usage.scanning ? '正在重新统计，显示的是上一次的结果' : undefined}
+    aria-label={segments.map(segment => `${segment.label} ${formatBytes(segment.bytes)}`).join('，')}>
+    {segments.map(segment => {
+      const percent = (segment.bytes / total) * 100;
+      const span = Math.max(0, Math.round(width * (segment.bytes / total)));
+      // 三段文字从完整到只剩百分比逐级退化,阈值按实际字宽留了内边距的余量。
+      const detail = span >= 150 ? 'full' : span >= 104 ? 'size' : span >= 54 ? 'pct' : 'none';
+      return <div key={segment.key} className={`storage-seg seg-${segment.key}`}
+        style={{flexGrow: segment.bytes}}
+        title={`${segment.label} ${formatBytes(segment.bytes)} · ${percent.toFixed(1)}%`}>
+        {detail !== 'none' && <span className="storage-seg-text">
+          {detail === 'full' && <span>{segment.label}</span>}
+          {detail === 'full' && <span>{formatBytes(segment.bytes)}</span>}
+          <span>{percent.toFixed(1)}%</span>
+        </span>}
+      </div>;
+    })}
+  </div>;
+}
+
+
 const PHASE_TEXT = {
   resolve: '获取中', plan: '准备中', download: '下载中', verify: '校验中',
   stage: '解压中', swap: '换入中', env: '构建环境', start: '启动中',
-  check: '检查中', done: '完成', fail: '失败',
+  check: '检查中', uninstall: '卸载中', done: '完成', fail: '失败',
 };
 
 function UpdateOverlay({progress, log}) {
@@ -67,7 +118,8 @@ function UpdateOverlay({progress, log}) {
           strokeDashoffset={spinning ? 0 : circumference * (1 - pct / 100)}/>
       </svg>
       <span className={`update-percent ${spinning ? 'is-spinning' : ''}`}>{spinning ? short : `${Math.round(pct)}%`}</span>
-      {typeof progress.rate === 'number' && progress.rate > 0 && <span className="update-rate">{`${(progress.rate / 1048576).toFixed(1)} MB/s`}</span>}
+      {/* 速率一直显示:编译 wheel 时是 0.0 MB/s,数字不闪不掉,用户能看出"在动/没在动" */}
+      {typeof progress.rate === 'number' && <span className="update-rate">{`${(progress.rate / 1048576).toFixed(1)} MB/s`}</span>}
     </div>
     <p className="update-label">{progress.label}</p>
     <p className="update-detail">{progress.detail || ' '}</p>
@@ -89,6 +141,9 @@ function UpdateOverlay({progress, log}) {
   const [confirm, setConfirm] = useState(null);
   const [progress, setProgress] = useState(null);
   const [updateLog, setUpdateLog] = useState('');
+  const [installing, setInstalling] = useState(false);
+  const [storage, setStorage] = useState(null);
+  const [dev, setDev] = useState(false);
 
   // Installer progress: download / verify / stage / swap each emit one event per tick.
   useEffect(() => {
@@ -104,6 +159,21 @@ function UpdateOverlay({progress, log}) {
       });
     })();
     return () => { off?.(); };
+  }, []);
+
+  // 占用统计:后台扫完一次就广播一次,界面只读缓存的结果。
+  useEffect(() => {
+    let off;
+    (async () => {
+      off = await listen('atelier://storage', event => setStorage(event.payload || null));
+      try { setStorage(await invoke('storage_usage')); } catch { /* 首次还没扫完 */ }
+    })();
+    return () => { off?.(); };
+  }, []);
+
+  // 只有开发构建才露出「重新运行初始设置」这类入口。
+  useEffect(() => {
+    invoke('build_info').then(info => setDev(!!info?.debug)).catch(() => setDev(false));
   }, []);
 
   async function refresh() {
@@ -246,11 +316,34 @@ function UpdateOverlay({progress, log}) {
         body: '下载并校验完成后，启动器会退出并自动换上新版本，大约 5 秒后自动重启。', label: '更新启动器'});
     } catch (err) { setError(String(err)); }
   }
+  /** 引导结束后的第一段：首次安装 → 卡片页 → 预热 → 控制台。 */
+  async function afterSetup() {
+    setNeedsSetup(false);
+    setError('');
+    try {
+      await refresh();
+      const info = await invoke('capabilities');
+      if (!info.installed) {
+        setInstalling(true);
+        await invoke('install_only');
+        setInstalling(false);
+        await refresh();
+      }
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      const port = await invoke('prewarm_only');
+      if (port) setWorkbenchPort(port);
+    } catch (err) {
+      setInstalling(false);
+      setError(String(err));
+    }
+  }
   const menuItems = [
     {value:'data', label:'打开数据目录', onSelect:()=>void invoke('open_runtime_path', {kind:'data'})},
     {value:'models', label:'打开模型目录', onSelect:()=>void invoke('open_runtime_path', {kind:'models'})},
-    {value:'setup', label:'重新运行初始设置', onSelect:()=>void invoke('reopen_setup')},
+    // 发布版不带"回到首次向导"的入口:它会按新目录把整套组件重装一遍,只留给开发调试。
+    ...(dev ? [{value:'setup', label:'重新运行初始设置', onSelect:()=>void invoke('reopen_setup')}] : []),
     {value:'update', label:'更新发行包', onSelect:()=>setConfirm({kind:'action', action:'install_variant', title:'更新 Atelier Free', body:'更新会停止当前实例，运行中的任务可能中断。', label:'更新'})},
+    {value:'prewarm', label:'准备运行环境', onSelect:()=>run('prewarm_only')},
     {value:'launcher', label:'更新启动器', onSelect:()=>void checkLauncherUpdate()},
     {value:'uninstall', label:'卸载', danger:true, onSelect:()=>setConfirm({kind:'action', action:'uninstall_variant', title:'卸载 Atelier Free', body:'卸载程序后，数据、模型和引擎环境将保留。', label:'卸载'})},
   ];
@@ -262,9 +355,10 @@ function UpdateOverlay({progress, log}) {
       <div className="boot-bar"><span/></div>
     </div>;
   }
-  if (needsSetup) return <Setup onDone={async () => { setNeedsSetup(false); await refresh(); }}/>;
+  if (needsSetup) return <Setup onDone={afterSetup}/>;
 
   return <>
+    {installing && progress && <div className="install-screen"><UpdateOverlay progress={progress} log={updateLog}/></div>}
     {!workbenchPort && <div className="launcher">
       <header className="launcher-header"><AtelierBrand/><div className="header-actions">
         <button type="button" className={`header-icon ${view === 'settings' ? 'active' : ''}`} aria-label="全局设置" title="全局设置" onClick={()=>setView(view === 'settings' ? 'capabilities' : 'settings')}><Icon name="sliders" size={16}/></button>
@@ -281,9 +375,10 @@ function UpdateOverlay({progress, log}) {
               <h2>{INSTALL_NAME}</h2>
               <span className="card-kind">{cap?.version ? `v${cap.version}` : '版本未知'}{installed ? ` · ${cap?.installDir}` : ' · 尚未安装'}</span>
             </div>
+            {/* 占用条占住「运行中」前边的全部空位 */}
+            <StorageBar usage={storage}/>
             <div className="instance-state">
               <Badge tone={running ? 'success' : 'neutral'}>{!installed ? '未安装' : running ? '运行中' : '已停止'}</Badge>
-              {cap?.port && <span className="cap-hint">127.0.0.1:{cap.port}</span>}
             </div>
             <div className="instance-actions">
               {installed
@@ -292,7 +387,7 @@ function UpdateOverlay({progress, log}) {
                   : <Button size="small" variant="primary" onClick={startInstall} disabled={!!busy}>{busy === 'open_workbench' ? '启动中…' : '启动'}</Button>
                 : <Button size="small" variant="primary" onClick={()=>run('install_variant')} disabled={!!busy}>安装</Button>}
               {installed && running && <Button size="small" variant="primary" onClick={()=>run('open_workbench')} disabled={!!busy}>打开工作台</Button>}
-              <DropdownMenu className="card-menu" label={`${INSTALL_NAME} 操作`} title={`${INSTALL_NAME} 操作`} disabled={!!busy} items={menuItems}>⋯</DropdownMenu>
+              <DropdownMenu className="card-menu" label={`${INSTALL_NAME} 操作`} title={`${INSTALL_NAME} 操作`} disabled={!!busy} items={menuItems}><Icon name="gear" size={16}/></DropdownMenu>
             </div>
           </div>
 
@@ -344,6 +439,8 @@ function UpdateOverlay({progress, log}) {
         {message && <p className="operation-message" role="status">{message}</p>}
         {error && <p className="error-text" role="alert">{error}</p>}
       </main>
+      {/* 小游戏在卡片外面:覆盖层挡住的是卡片,等待时总得有点能动手的东西 */}
+      {progress?.phase === 'env' && <div className="dino-dock"><DinoGame/></div>}
     </div>}
 
     {workbenchPort && <div className="embedded-workbench">

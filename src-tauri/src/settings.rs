@@ -19,7 +19,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever the on-disk shape changes; `load` migrates anything older.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 /// Values that are the same for every installation on this machine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +38,10 @@ pub struct Shared {
     pub close_to_tray: bool,
     /// Optional endpoint for the sellable-pipeline catalog. Empty disables it.
     pub catalog_url: String,
+    /// Absolute install root (the whole distribution lives here). Empty means
+    /// "the historical default under LOCALAPPDATA". Written by the wizard's
+    /// install-location step or by a migration; not by hand.
+    pub install_dir: String,
 }
 
 impl Default for Shared {
@@ -49,6 +53,7 @@ impl Default for Shared {
             ollama_token_hint: String::new(),
             close_to_tray: true,
             catalog_url: String::new(),
+            install_dir: String::new(),
         }
     }
 }
@@ -118,10 +123,25 @@ pub fn settings_path() -> Result<PathBuf, String> {
     Ok(state_dir()?.join("launcher.json"))
 }
 
+/// UTF-8 BOM at the top of the file used to make the whole parse fail, which silently reset
+/// every choice (install dir, model dir, token hint) and dropped the user back into the wizard
+/// on what looked like a perfectly good file — PowerShell's `Out-File`/`Set-Content` add one.
+fn strip_bom(bytes: &[u8]) -> &[u8] {
+    bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)
+}
+
 pub fn load() -> Settings {
     let Ok(path) = settings_path() else { return Settings::default() };
     let Ok(bytes) = fs::read(&path) else { return Settings::default() };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return Settings::default() };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(strip_bom(&bytes)) else {
+        // Never wipe silently: keep the broken file next to the real one.
+        let _ = fs::copy(&path, path.with_extension("corrupt.json"));
+        return Settings::default();
+    };
+    from_value(value)
+}
+
+fn from_value(value: serde_json::Value) -> Settings {
     match value.get("schema").and_then(serde_json::Value::as_u64) {
         Some(version) if version >= SCHEMA as u64 => {
             serde_json::from_value(value).unwrap_or_default()
@@ -183,6 +203,22 @@ impl SettingsState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_byte_order_mark_does_not_reset_the_settings() {
+        let text = r#"{
+            "schema": 3,
+            "shared": { "models_dir": "E:\\Weights", "install_dir": "F:\\tmp" },
+            "installations": { "free": { "data_dir": "F:\\tmp\\data", "setup_confirmed": true } }
+        }"#;
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(text.as_bytes());
+        let value = serde_json::from_slice::<serde_json::Value>(strip_bom(&bytes)).unwrap();
+        let settings = from_value(value);
+        assert_eq!(settings.shared.install_dir, r"F:\tmp");
+        assert_eq!(settings.shared.models_dir, r"E:\Weights");
+        assert!(settings.installation("free").setup_confirmed);
+    }
 
     #[test]
     fn empty_choices_fall_back_to_the_root_defaults() {

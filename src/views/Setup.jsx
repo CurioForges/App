@@ -56,6 +56,7 @@ export function Setup({onDone}) {
   const [modelsCheck, setModelsCheck] = useState(null);
   const [tokenResult, setTokenResult] = useState(null);
   const [picking, setPicking] = useState('');
+  const [modelsTouched, setModelsTouched] = useState(false);
   const [testing, setTesting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -65,7 +66,9 @@ export function Setup({onDone}) {
       try {
         const state = await invoke('setup_state');
         setStatus(state);
-        setDataDir(state.dataDir);
+        // 第一栏问的是「安装与数据目录」,也就是安装根:默认给根目录,
+        // 不能拿解析后的 `<root>/data` 回填,否则每次都会再套一层 data。
+        setDataDir(state.defaults.installDir);
         setModelsDir(state.modelsDir);
       } catch (err) { setError(String(err)); }
     })();
@@ -93,7 +96,12 @@ export function Setup({onDone}) {
     setPicking(kind); setError('');
     try {
       const picked = await invoke('choose_directory', {kind, current:current || null});
-      if (picked) apply(picked);
+      if (!picked) return;
+      apply(picked);
+      if (kind === 'models') { setModelsTouched(true); return; }
+      // 权重目录默认跟着安装根走:用户还没单独挑过权重时,跟着新根改到 <root>\models,
+      // 免得把权重留在旧盘的默认位置上。
+      if (!modelsTouched) setModelsDir(picked.replace(/[\\/]+$/, '') + '\\models');
     } catch (err) { setError(String(err)); }
     finally { setPicking(''); }
   }
@@ -145,13 +153,13 @@ export function Setup({onDone}) {
     {
       id:'data',
       eyebrow:'ATELIER / SETUP / 03',
-      title:'项目数据目录',
-      lede:'任务记录、调度队列、管线产物和中间文件都写进这一个目录。它会长大，也会是最需要备份的那部分。',
-      bar: directoryBar({kind:'data', value:dataDir, label:'数据目录', check:dataCheck, apply:setDataDir}),
+      title:'安装与数据目录',
+      lede:'应用本体、运行环境、任务记录和作品都放在这一个目录里。它会长到几十 GB，建议单独放一块盘，也最值得备份。',
+      bar: directoryBar({kind:'data', value:dataDir, label:'安装与数据目录', check:dataCheck, apply:setDataDir}),
       columns: 2,
       items: [
-        {image:dataFixedPath, step:'01 位置固定', title:'发行包只认这个路径', detail:'域代码直接拼 ATELIER_ROOT/data，所以它不是可配置项，启动器也不去改它。'},
-        {image:dataJunction, step:'02 指向你的目录', title:'原位置留一条联接', detail:'写入穿过联接落到你选的目录。备份、迁移、换盘只需要搬那一个目录。'},
+        {image:dataFixedPath, step:'01 一个目录装全部', title:'组件、环境、作品都在这里', detail:'装完就是一台完整的机器,搬盘、备份、迁移只需要搬这一个目录。'},
+        {image:dataJunction, step:'02 空间要够', title:'建议单独一块盘', detail:'组件约 4 GB,运行环境约 30 GB,再加上作品与缓存,留 80 GB 以上更从容。'},
       ],
     },
     {

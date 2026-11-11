@@ -6,7 +6,24 @@ use serde_json::Value;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::{AppHandle, Emitter, State};
 
+/// Install root. Priority: settings (wizard / migration) → `ATELIER_HOME` → default.
+/// The env var stays as a manual escape hatch for people who never open the wizard.
 pub fn install_dir() -> Result<PathBuf, String> {
+    let configured = crate::settings::load().shared.install_dir;
+    if !configured.trim().is_empty() {
+        let path = PathBuf::from(configured.trim());
+        let _ = fs::create_dir_all(&path);
+        return Ok(path);
+    }
+    if let Some(custom) = env::var_os("ATELIER_HOME").filter(|v| !v.is_empty()) {
+        let path = PathBuf::from(custom);
+        let _ = fs::create_dir_all(&path);
+        return Ok(path);
+    }
+    default_install_dir()
+}
+
+pub fn default_install_dir() -> Result<PathBuf, String> {
     env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("AtelierFree")).ok_or("LOCALAPPDATA 未设置".into())
 }
 #[derive(Debug)]
@@ -253,7 +270,9 @@ pub struct VariantInfo { installed: bool, path: String, port: Option<u16> }
 pub async fn variant_info() -> Result<VariantInfo, String> {
     tauri::async_runtime::spawn_blocking(|| {
     let path = install_dir()?;
-    let installed = path.join("start.ps1").is_file() && path.join("atelier-kernel.exe").is_file();
+    // The launcher assembles the distribution tree itself and does not install `start.ps1`;
+    // the kernel binary plus the composition it is started with is what "installed" means.
+    let installed = path.join("atelier-kernel.exe").is_file() && path.join("kernel_boot.json").is_file();
     let port = if installed { match running_kernel(&path)? { Some(kernel) => kernel.port.or_else(|| configured_port(&path)), None => configured_port(&path) } } else { None };
     Ok(VariantInfo { installed, path: path.display().to_string(), port })
     }).await.map_err(|e| e.to_string())?

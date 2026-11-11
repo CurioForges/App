@@ -111,8 +111,11 @@
 4. 无网但各域 artifact 已缓存（`%LOCALAPPDATA%\Atelier\download-cache`）→ 直接走 `stage`。
 5. 新机器首次启动：env 逐个出现（speech / hf4-media / hf5-media …），失败不阻断。
 6. 启动器自更新：换文件后版本号变化；故意写坏新包 → 回滚到旧版并能启动。
-7. 双路一致性：同一版本下，`install.ps1` 装出来的目录树与启动器装出来的目录树文件清单一致
-   （`VERSION`、时间戳除外），`atelier-kernel.exe --headless` 两边都能起四域。
+7. 双路一致性：同一版本下，`install.ps1` 装出来的目录树与启动器装出来的目录树**域目录一致**
+   （`atelier-kernel.exe`、`kernel_boot.json`、`dist/`、四个 host、`engine-root/`、`runtime-site-packages/`、
+   `pipeline-plugins/`、`sdk/`），`atelier-kernel.exe --headless` 两边都能起四域。
+   启动器**不装** `start.ps1 / install.ps1 / README.md / assets/ / DISTRIBUTION.txt`——那几份是给
+   "没有启动器的人"的；域目录之外的差异只有这些。
 
 ---
 

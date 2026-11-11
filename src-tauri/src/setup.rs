@@ -211,7 +211,6 @@ pub async fn complete_setup(
     models_dir: String,
     token: Option<String>,
 ) -> Result<SetupResult, String> {
-    let root = install_dir()?;
     let data = PathBuf::from(data_dir.trim());
     let models = PathBuf::from(models_dir.trim());
     if !data.is_absolute() {
@@ -220,8 +219,10 @@ pub async fn complete_setup(
     if !models.is_absolute() {
         return Err("模型权重目录必须是绝对路径。".into());
     }
-    if models.starts_with(&data) || data.starts_with(&models) {
-        return Err("数据目录和模型目录不能互相包含。".into());
+    // 权重目录默认就放在安装根下面（<root>/models），这是允许的；不能接受的只有
+    // 两者相同，或者权重目录把安装根包在里面 —— 那会在迁移/清理时互相吃掉。
+    if models == data || data.starts_with(&models) {
+        return Err("模型目录不能是安装目录本身，也不能是它的上级目录。".into());
     }
     for (kind, path) in [("data", &data), ("models", &models)] {
         let check = locations::inspect(kind, path);
@@ -230,11 +231,17 @@ pub async fn complete_setup(
         }
     }
 
-    let root_data = root.join(contract::DATA);
-    let outcome = locations::ensure_data_link(&root_data, &data)?;
+    // The chosen directory IS the install root, so `data/` is simply a child of it:
+    // no junction is needed (asking for a link onto its own default is a no-op).
+    let root_data = data.join(contract::DATA);
+    let outcome = locations::ensure_data_link(&root_data, &root_data)?;
     std::fs::create_dir_all(&models).map_err(|e| format!("无法创建模型目录：{e}"))?;
 
     let mut settings = state.snapshot();
+    // The chosen directory doubles as the install root: components, engine
+    // environments and `data/` all live under it, so one disk holds the lot and
+    // the `ATELIER_ROOT/data` contract stays intact.
+    settings.shared.install_dir = data.display().to_string();
     settings.shared.models_dir = models.display().to_string();
     if let Some(token) = token {
         credentials::store(&token)?;
@@ -246,7 +253,7 @@ pub async fn complete_setup(
     }
     {
         let installation = settings.installation_mut(crate::catalog::INSTALL_ID);
-        installation.data_dir = data.display().to_string();
+        installation.data_dir = data.join(contract::DATA).display().to_string();
         installation.setup_confirmed = true;
     }
     settings::save(&settings)?;
@@ -307,9 +314,15 @@ pub fn reopen(app: &AppHandle) -> Result<(), String> {
 }
 
 /// Command twin of the tray entry, so the launcher UI can offer it too.
+///
+/// 仅开发构建可用：发布版不给用户返回首次向导的入口（否则改一次目录就会把整套
+/// 组件按新根重装一遍）。
 #[tauri::command]
 pub fn reopen_setup(app: AppHandle) -> Result<(), String> {
-    reopen(&app)
+    #[cfg(debug_assertions)]
+    { reopen(&app) }
+    #[cfg(not(debug_assertions))]
+    { let _ = &app; Err("这个功能只在开发构建里可用。".into()) }
 }
 
 /// Tray/menu entry that re-surfaces the launcher window.

@@ -1,5 +1,6 @@
 /* Compact variant matrix using the Web domain's design tokens. */
-.launcher{min-height:100vh;background:var(--bg)}
+/* 页面吃满视口、自己决定谁滚动:主区可滚,卡片外的底栏永远留在视野里 */
+.launcher{height:100vh;min-height:100vh;overflow:hidden;background:var(--bg);display:flex;flex-direction:column}
 .launcher-header{min-height:76px;padding:14px clamp(20px,4vw,64px);border-bottom:1px solid var(--line);background:var(--surface);display:flex;align-items:center;justify-content:space-between;gap:20px}
 .launcher-header .brand{margin:0;gap:10px}.launcher-header .brand-mark{width:32px;height:35px;font-size:40px;line-height:32px}.launcher-header .brand-mark span{font-size:42px;top:6px}.launcher-header .brand>div{font-size:22px}.launcher-header .brand small{font-size:10px;letter-spacing:1.4px;margin-top:5px;white-space:nowrap}
 .header-context{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:var(--text-small)}
@@ -7,7 +8,7 @@
 .header-icon{display:grid;place-items:center;width:30px;height:30px;border:1px solid var(--line);border-radius:50%;background:var(--surface);color:var(--muted);cursor:pointer;transition:color .15s,border-color .15s,background .15s}
 .header-icon:hover{color:var(--ink);border-color:var(--accent)}
 .header-icon.active{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
-.launcher-main{width:100%;max-width:1840px;margin:0 auto;padding:0 clamp(20px,4vw,64px) 70px}
+.launcher-main{width:100%;max-width:1840px;margin:0 auto;padding:0 clamp(20px,4vw,64px) 40px;flex:1;min-height:0;overflow-y:auto}
 .page-intro{padding:38px 0 28px;border-bottom:1px solid var(--line)}
 .eyebrow{font:var(--text-small) var(--mono);letter-spacing:1.4px;color:var(--accent)}
 .page-intro h1{font-size:25px;letter-spacing:-.4px;font-weight:600;line-height:1.3;margin-top:9px}.page-intro p{color:var(--muted);margin-top:8px;font-size:var(--text-body)}
@@ -16,7 +17,21 @@
 .variant-card{height:164px;min-width:0;padding:14px;display:flex;flex-direction:column;box-shadow:var(--shadow)}
 .card-head{display:flex;align-items:center;gap:10px;min-width:0}.variant-mark,.custom-mark{width:34px;height:34px;border-radius:8px;flex:none}.custom-mark{display:grid;place-items:center;color:var(--accent);background:var(--accent-soft)}
 .card-heading{min-width:0;flex:1}.card-heading h3{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.card-kind{display:block;color:var(--muted);font-size:var(--text-small);line-height:1.3}
-.card-menu{width:24px;height:28px;font-size:19px;line-height:1;color:var(--muted);border-radius:5px}.card-menu:hover{background:var(--bg);color:var(--ink)}
+.card-menu{width:30px;height:30px;display:grid;place-items:center;color:var(--muted);border-radius:5px}.card-menu:hover{background:var(--bg);color:var(--ink)}
+/* 占用比例条:三段色块,文本贴在段内居中;段宽由 JS 实测后逐级收缩,绝不越过区间 */
+/* 光学补偿:满色长条比同高的描边按钮"看"着更厚,收 2px 才显得齐平(实测两者都是 30px 高
+   且 y 完全对齐,但眼睛读出来不一样)。 */
+.storage-bar{flex:1 1 auto;min-width:180px;height:28px;align-self:center;display:flex;align-items:stretch;overflow:hidden;
+  border-radius:999px;background:var(--line);color:#fff;font:11px/1 var(--mono);white-space:nowrap}
+.storage-bar.is-scanning{background:var(--accent-soft);color:var(--muted);display:grid;place-items:center;font-size:11px;min-width:120px;flex:0 0 auto;padding:0 14px}
+.storage-seg{flex-basis:0;flex-shrink:1;min-width:0;display:grid;place-items:center;overflow:hidden}
+.storage-seg-text{display:inline-flex;align-items:baseline;gap:5px;padding:0 7px;overflow:hidden}
+.storage-seg:hover{filter:brightness(1.08)}
+.storage-bar.is-stale{opacity:.72}
+.seg-app{background:#2F6F4E}
+.seg-env{background:#5E9A74}
+.seg-data{background:#B4762A}
+.seg-models{background:#3F6E8C}
 .card-description{font-size:var(--text-small);color:var(--muted);line-height:1.6;margin:10px 0 0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
 .card-bottom{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:auto;padding-top:8px}.card-bottom .badge{font-size:var(--text-small)}.card-bottom .btn{min-height:27px;padding:3px 10px}.card-caption{font-size:var(--text-small);color:var(--muted);white-space:nowrap}
 .variant-groups{display:grid;gap:25px}.group-heading{display:flex;align-items:center;gap:10px;margin-bottom:10px}.group-heading h3{font-size:14px;font-weight:600}.group-heading span{color:var(--muted);font:var(--text-small) var(--mono)}.empty-group{font-size:var(--text-small);color:var(--muted)}
@@ -54,7 +69,8 @@
 .cap-state{flex:none;display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:132px}
 .cap-unlock{border:1px dashed var(--line);background:transparent;color:var(--muted);font-size:11px;line-height:1;padding:5px 10px;border-radius:var(--radius-pill);cursor:pointer;transition:color .15s,border-color .15s,background .15s}
 .cap-unlock:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
-.cap-hint{font:10.5px var(--mono);color:var(--muted);white-space:nowrap}
+/* 卡片右上三个控件统一高度,横向对齐:停止 / 打开工作台 / 齿轮 */
+.instance-actions .btn.small{height:30px;display:inline-flex;align-items:center;justify-content:center;padding-top:0;padding-bottom:0}
 .foreign-warning p{margin:0 0 8px;font-size:12.5px;line-height:1.7}
 .foreign-warning ul{margin:0 0 10px;padding-left:16px}
 .foreign-warning li{font:11.5px var(--mono);color:var(--muted);overflow-wrap:anywhere}
@@ -159,5 +175,16 @@
 
 .update-ring.is-spinning svg{animation:ring-spin 1.15s linear infinite}
 @keyframes ring-spin{from{transform:rotate(-90deg)}to{transform:rotate(270deg)}}
-.update-percent.is-spinning{font:600 13px var(--mono);color:var(--muted);letter-spacing:.5px}
+.update-percent.is-spinning{font:600 13px var(--mono);color:var(--muted);letter-spacing:.5px;transform:translateY(-6px)}
 .update-rate{position:absolute;top:calc(50% + 15px);left:50%;transform:translateX(-50%);font:10px var(--mono);color:var(--muted);white-space:nowrap}
+
+/* 等环境构建时的小恐龙:卡片外面、贴在窗口底部；地面线横贯整行,两侧只留页面边距。
+   注意:这里**不能**给 .launcher-main 补底部留白来避让——那会把页面撑高出一个滚动条,
+   窗口最小高度 900 时空间本来就够,让 flex 的 auto margin 把它压到底就行。 */
+.dino-dock{margin-top:auto;display:flex;justify-content:center;padding:0 clamp(20px,4vw,64px) 12px}
+.dino{display:grid;justify-items:center;gap:2px;width:100%;max-width:1840px;margin:0 auto}
+.dino-stage{width:100%}
+.dino canvas{display:block;width:100%;height:80px;cursor:pointer;background:transparent}
+.dino-meta{font:10px var(--mono);color:var(--muted);letter-spacing:.3px}
+.install-screen{position:fixed;inset:0;z-index:50;background:var(--surface,#faf7f0)}
+.install-screen .update-overlay{position:absolute;inset:0;border:0;border-radius:0;backdrop-filter:none;background:transparent}

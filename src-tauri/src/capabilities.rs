@@ -133,7 +133,7 @@ fn version_of(root: &Path) -> String {
 pub fn gather(settings: &settings::Settings) -> Result<Capabilities, String> {
     let root = install_dir()?;
     let install_id = catalog::INSTALL_ID;
-    let installed = root.join("atelier-kernel.exe").is_file() && root.join("start.ps1").is_file();
+    let installed = root.join("atelier-kernel.exe").is_file() && root.join("kernel_boot.json").is_file();
     let declared: BTreeSet<String> = declared_domains(&root.join("kernel_boot.json")).into_iter().collect();
     let port = if installed { live_port(&root)? } else { None };
     let live = port.map(|port| live_states(port)).unwrap_or_default();
