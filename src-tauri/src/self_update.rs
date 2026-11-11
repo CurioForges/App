@@ -68,8 +68,20 @@ fn is_newer(latest: &str, current: &str) -> bool {
 
 pub fn check() -> Result<SelfUpdate, String> {
     let current = current_version();
-    let latest = gh(&["api", &format!("repos/{REPO}/releases/latest"), "--jq", ".tag_name"])?
-        .trim().trim_start_matches('v').to_string();
+    // 还没发过 release 时 gh 返回 404:这不是错误,是"暂时没有新版本"。
+    let latest_raw = match gh(&["api", &format!("repos/{REPO}/releases/latest"), "--jq", ".tag_name"]) {
+        Ok(text) => text,
+        Err(error) if error.contains("Not Found") || error.contains("404") => {
+            return Ok(SelfUpdate {
+                current: current.clone(),
+                latest: current,
+                available: false,
+                notes: "尚未发布任何版本".into(),
+            })
+        }
+        Err(error) => return Err(error),
+    };
+    let latest = latest_raw.trim().trim_start_matches('v').to_string();
     let notes = gh(&["api", &format!("repos/{REPO}/releases/latest"), "--jq", ".body"])
         .unwrap_or_default();
     Ok(SelfUpdate {

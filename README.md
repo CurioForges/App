@@ -70,8 +70,8 @@ Atelier 是一套装在 Windows 上的 **AI 创作工作台**：给它一个视�
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/update-progress.png" alt="更新进度" width="260"><br>
-  <sub>更新与环境准备都有实时进度与下载速度</sub>
+  <img src="docs/screenshots/update-progress.png" alt="环境准备进度" width="820"><br>
+  <sub>更新与环境准备都有实时进度与下载速度，界面不会被锁住</sub>
 </p>
 ## 配置建议
 
