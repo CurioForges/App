@@ -11,9 +11,10 @@
 启动器已经能装、起、停 Atelier Free，首启三步引导可用，主界面是**域能力面板（只读状态）**，
 设置分全局/安装两层。构建与测试干净（Rust 17 项、前端 2 项）。
 
-**验收版本：v0.1.13**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
+**验收版本：v0.1.14**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
 Windows 分段下载、安装器编码四处缺陷已修，见 §7.1–§7.3；视频管线 S03 的 `Expected str, got VPath`
-已定位为 Cython 注解 dict 类型校验并修复，见 §7.4）。
+已定位为 Cython 注解 dict 类型校验并修复，见 §7.4；S04 术语层的 `target_invalid` 与失败日志缺原因
+一并修掉，见 §7.5）。
 
 ---
 
@@ -234,6 +235,30 @@ video artifact 重建后随 AtelierFree **v0.1.13** 发布。修完在本地用�
 **同类隐患**：凡是注解成 `dict[str, str]`（或其它内建标量）却存放 VPath / Path 的变量，都会在下标读取时
 抛这个错；S02 的 `dict[str, Path]` 不受影响（Path 不是内建标量）。
 
+### 7.5 S04 术语层 `target_invalid` 与缺失的失败原因（2026-11-12，已修）
+
+**现象**：S03 修好后，同一任务在 **55.0%（`progress_message=S04 术语层`）** 再次失败，
+scheduler 记 `err=target_invalid`；而管线日志只有一句「管线失败」，没有任何原因。
+
+**怎么定位**：查 `F:\Atelier\data\atelier_kernel.db` 的 `audit` 表——最后一条是
+`pipelines -> engines.term_capabilities`（completed），**之后再没有任何消息进入审计**。
+`target_invalid` 是内核「零盲发前置拦截」的返回：目标 handler 不存在 / 目标域未 Active 时根本不会进管道，
+自然也不会落 audit。这条「最后一条审计 + 下一条缺失」就是消息被前置拦截的特征。
+
+**真因**：`KnowledgeStore.channel_domain()` 查 `daemons.channels`，而**免费发行版没有 daemons 域**
+（装配只有 web / scheduler / pipelines / engines）。S04 用 `source_meta.channel_id`（YouTube 频道
+`UCQ-…`）必定走到这里；而 runner 启动时手动任务的 `job.channel_id` 为空，所以这个坑之前一直没被触发。
+
+**修法**：
+
+- `knowledge_store.py`：`channel_domain` 只捕获 `status == 'target_invalid'`，降级为「无领域」（通用池），
+  记一次日志并记住，后续不再发这条消息；其它错误照旧抛出（不吞真故障）。
+- `context.py` / `execution.py`：`finish(state, error='')` 把失败原因拼进「管线失败」那一行，
+  失败时改用 ERROR 级别。现在 UI 上直接能看到 `管线失败: target_invalid`，不用再翻 DB。
+
+**提交**：video `15ae823`、pipelines `67343b6`（顺带把 pipelines 里指向 video 的 gitlink 从 `993368b` 更到新提交），
+随 **v0.1.14** 发布。
+
 ---
 
 ## 8. 环境与操作
@@ -242,8 +267,9 @@ video artifact 重建后随 AtelierFree **v0.1.13** 发布。修完在本地用�
 **测试**：`cargo test --release`（在 `src-tauri`）、`npm test`
 **开发**：`npm run tauri dev`
 
-**本机现状**：`%LOCALAPPDATA%\AtelierFree` 装的是 **v0.1.9**（2026-11-12 从发行包重装并复验，四域 `active`、0 重启）。
-本地仓库：`G:\Atelier\atelier-free` 在 `main@30fd1d0`、`domains/pipelines` 在 `320b19c`（已推送）。
+**本机现状**：安装在 **`F:\Atelier`**（v0.1.13，2026-11-12 用启动器装；四域 `active`，跑过一版
+S03 修复后的真实任务）。本地仓库：`G:\Atelier\atelier-free` 在 `main@df7c1ab`（v0.1.14），
+`domains/pipelines` 在 `67343b6`、`definitions/video` 在 `15ae823`（均已推送）。
 `G:\Atelier\atelier-solo\runtime` 还有一份开发态 kernel（不是安装，但会被跨安装互斥检测到——这是用户有意保留的测试对象）。
 
 **⚠ 别用 PowerShell 改源码文件**：`Get-Content`/`Set-Content` 在这个环境会按 GBK 读写，
