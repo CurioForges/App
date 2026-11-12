@@ -11,13 +11,14 @@
 启动器已经能装、起、停 Atelier Free，首启三步引导可用，主界面是**域能力面板（只读状态）**，
 设置分全局/安装两层。构建与测试干净（Rust 17 项、前端 2 项）。
 
-**验收版本：v0.1.20**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
+**验收版本：v0.1.21**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
 Windows 分段下载、安装器编码四处缺陷已修，见 §7.1–§7.3；视频管线 S03 的 `Expected str, got VPath`
 已定位为 Cython 注解 dict 类型校验并修复，见 §7.4；S04 术语层的 `target_invalid` 与失败日志缺原因
 一并修掉，见 §7.5；IndexTTS 的 vendored 代码补进发行包，见 §7.6；S05 的 `tts_path` 参数类型已修，
 见 §7.7；插件构建已关掉注解运行时校验并加了编译产物冒烟测试，见 §7.8；
 插件里 `open('vfs://…')` 因 Cython 缓存 builtins 而失效的问题已修，见 §7.9；
-多比例封面丢失与摘要文件位置已修，见 §7.10；摘要已改为直接入内核数据库，见 §7.11）。
+多比例封面丢失与摘要文件位置已修，见 §7.10；摘要已改为直接入内核数据库，见 §7.11；
+引擎失败日志补上原因与级别、并新增启动暖机，见 §7.12）。
 
 ---
 
@@ -408,6 +409,52 @@ v0.1.19 把摘要写到 `data/pipelines/jobs/<job_id>/pipeline_summary.json`，�
 **验证**：scheduler 的查询分支用假 SDK 单测（命中/回落两条）；`server.mjs` `node --check`；
 插件冒烟三条全过。
 
+### 7.12 失败日志缺原因 + 引擎冷启动（v0.1.21）
+
+**现象**：任务面板里 `OverlapDetectEngine` 一行是「已失败 · 0/1 项 · 耗时 64.55 秒」，级别却是 INFO；
+展开只有「载入开始 / 载入完成」，看不到为什么失败。原因其实一直在库里
+（`store_engines` 的 `error` 字段）：`TypeError: _infer_impl() missing 1 required positional argument: 'input_data'`。
+那次失败是手工探测调用（`source_domain=web`、无 `job_id`），管线自己的四次调用全部 `succeeded`。
+
+**真因（两处）**：
+
+- `base/model.py` 的推理收口行把摘要写成 `result=<none>`，异常被 `finally` 吞掉，且一律 `logger.info`；
+- `control/domain.py` 的调用收口行同样固定 INFO、不带 `record['error']`。
+
+**做法**：
+
+- 推理收口：失败记 `error=类型: 消息首行`（≤400 字）并走 `logger.error`，phase `infer:fail`；成功仍 INFO + 结果摘要；
+- 调用收口：统一走 `_log_call_end()`，`fail` 时 error 级并附 `error=…`（≤200 字），`cancel` 保持 INFO。
+
+**冷启动实测（同一次任务内切段）**：`载入完成,耗时 183.03 秒`。`model.py:277` 紧贴 `_load_impl`
+前打「载入开始」，`:302` 在 `finally` 里算 elapsed，所以 183 s 就是载入本身；推理另计 29.57 s、
+整次调用 218.88 s。用 load 窗口里那条 lightning 的 `OneLogger` 日志切成两段：
+
+| 段 | 冷（10:49） | 热（12:03，同一引擎新进程） |
+| :-- | ---: | ---: |
+| A：`import torch` + `pyannote.audio` | 131.51 s | 8.30 s |
+| B：`from_pretrained` + 构造 + `to(cuda)` | 51.52 s | 3.63 s |
+| 合计 | 183.03 s | 11.92 s |
+
+排除项：环境哈希 3 个 profile 实测 359 ms 且发生在「执行进程就绪」之前；执行槽等待 12 ms
+（`queued_at`→`started_at`）；`worker 就绪 → 载入开始` 1.8–5.7 s。权重 5.9 MB、`from_pretrained` 0.1 s，
+不是下载。差异全在首批 DLL 的页缓存与杀软扫描。
+
+**做法（暖机）**：新增 `domains/engines/environments/warm.py`，`EngineDomain.boot()` 就绪后在后台
+按 `speech → hf4-media → hf5-media → …` 顺序，用**各环境自己的解释器** import 既定模块
+（`torch`、`pyannote.audio`、`transformers`），把冷载入的首次成本挪到开机空闲时段：
+
+- 子进程 `BELOW_NORMAL_PRIORITY_CLASS`；不占 GPU、不载权重、不联网；
+- 只暖已构建的环境，未构建直接跳过（建环境仍是 `prewarm` 的职责）；`prewarm` 建好也会顺手暖一次；
+- 预算默认 240 s（`ATELIER_ENGINE_WARM_BUDGET`），开关 `ATELIER_ENGINE_WARM=off`；
+- 停域时 `warm_cancel` 立刻结束暖机子进程。
+
+**实测**：speech 首次暖机 42 s（torch 6.6 / pyannote 27.4），第二次 8.0–8.6 s；
+暖过之后同一环境新进程 import 由 131 s 降到 8–12 s。
+
+**提交**：engines `2a807fe`（含 `tests/test_engine_failure_log_and_warm.py` 9 项，unittest 全过），
+随 **v0.1.21** 发布。
+
 ---
 
 ## 8. 环境与操作
@@ -416,9 +463,9 @@ v0.1.19 把摘要写到 `data/pipelines/jobs/<job_id>/pipeline_summary.json`，�
 **测试**：`cargo test --release`（在 `src-tauri`）、`npm test`
 **开发**：`npm run tauri dev`
 
-**本机现状**：安装在 **`F:\Atelier`**（v0.1.17，2026-11-12 用启动器装；四域 `active`）。本地仓库：
+**本机现状**：安装在 **`F:\Atelier`**（2026-11-12 用启动器装；四域 `active`）。本地仓库：
 `G:\Atelier\atelier-free` 在 `main@07c904e`（v0.1.20 之后又加了「域 artifact 镜像进 release」的 workflow 改动），
-`domains/pipelines` 在 `8f2adf9`、`domains/engines` 在 `b71ece3`、`domains/web` 在 `082f0af`、
+`domains/pipelines` 在 `8f2adf9`、`domains/engines` 在 `2a807fe`（v0.1.21）、`domains/web` 在 `082f0af`、
 `domains/scheduler` 在 `870500a`、`definitions/video` 在 `d8b39b5`（均已推送；pipelines 里的 video gitlink
 仍停在 `15ae823`，不影响发布——video 走独立 artifact）。
 `G:\Atelier\atelier-solo\runtime` 还有一份开发态 kernel（不是安装，但会被跨安装互斥检测到——这是用户有意保留的测试对象）。
