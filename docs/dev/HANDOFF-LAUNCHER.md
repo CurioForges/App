@@ -11,11 +11,11 @@
 启动器已经能装、起、停 Atelier Free，首启三步引导可用，主界面是**域能力面板（只读状态）**，
 设置分全局/安装两层。构建与测试干净（Rust 17 项、前端 2 项）。
 
-**验收版本：v0.1.16**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
+**验收版本：v0.1.17**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
 Windows 分段下载、安装器编码四处缺陷已修，见 §7.1–§7.3；视频管线 S03 的 `Expected str, got VPath`
 已定位为 Cython 注解 dict 类型校验并修复，见 §7.4；S04 术语层的 `target_invalid` 与失败日志缺原因
 一并修掉，见 §7.5；IndexTTS 的 vendored 代码补进发行包，见 §7.6；S05 的 `tts_path` 参数类型已修，
-见 §7.7）。
+见 §7.7；插件构建已关掉注解运行时校验并加了编译产物冒烟测试，见 §7.8）。
 
 ---
 
@@ -319,6 +319,25 @@ RuntimeError('Model load failed: IndexTTS 子模块未初始化，请执行:
 `ctx.native()` 的返回值（Path）或 VPath，要么调用点显式 `str(...)`，要么把注解放宽；
 排查时看错误文案就能分辨：`Expected str, got …` 是容器下标，`Argument 'x' has incorrect type` 是参数。
 
+### 7.8 从根上关掉 Cython 注解运行时校验（2026-11-12）
+
+§7.4（dict 下标）和 §7.7（函数参数）是同一类问题的两种形态。只补单个调用点，下一个新函数还会再炸——
+所以这次改在构建层：
+
+- `packaging/build.ps1` 生成的 setup 与 `packaging/setup.py` 都加上
+  `compiler_directives={'language_level': '3', 'annotation_typing': False}`。
+  这些模块是纯 Python，注解本来就只是文档；关掉后 Cython 不再把 `str` / `dict[str, str]` 编译成
+  运行时类型断言，这类 `TypeError` 从机制上消失。
+- 回归测试：`packaging/check_plugin.py`，在 CI 构建完成后对**编译产物**跑两条冒烟：
+  1. `TranslationPair.set_dub` / `AudioUnit.set_dub` 收 `Path` → 存成 `str`；
+  2. `AudioUnit.add_pair(src_text=Path(...))` → 带 `str` 注解的参数收 Path 不报错
+     （这条专门证明开关仍生效；谁把它加回去，构建立刻失败）。
+  工作流 `.github/workflows/artifact.yml` 已把该检查放在 Build 之后，失败即不出包。
+- 代价：失去注解带来的那点 Cython 优化（这些模块的热点是 numpy，可忽略）；类型正确性交回业务代码
+  （`set_dub` 内部仍 `str()` 归一）。
+
+提交 `atelier-pipeline-video@cf0e45c`，随 **v0.1.17** 发布。
+
 ---
 
 ## 8. 环境与操作
@@ -327,9 +346,9 @@ RuntimeError('Model load failed: IndexTTS 子模块未初始化，请执行:
 **测试**：`cargo test --release`（在 `src-tauri`）、`npm test`
 **开发**：`npm run tauri dev`
 
-**本机现状**：安装在 **`F:\Atelier`**（v0.1.15，2026-11-12 用启动器装；四域 `active`）。本地仓库：
-`G:\Atelier\atelier-free` 在 `main@a24634b`（v0.1.16），`domains/pipelines` 在 `67343b6`、
-`domains/engines` 在 `b71ece3`、`definitions/video` 在 `df1cf24`（均已推送；pipelines 里的 video gitlink
+**本机现状**：安装在 **`F:\Atelier`**（v0.1.16，2026-11-12 用启动器装；四域 `active`）。本地仓库：
+`G:\Atelier\atelier-free` 在 `main@3cc2f0f`（v0.1.17），`domains/pipelines` 在 `67343b6`、
+`domains/engines` 在 `b71ece3`、`definitions/video` 在 `cf0e45c`（均已推送；pipelines 里的 video gitlink
 仍停在 `15ae823`，不影响发布——video 走独立 artifact）。
 `G:\Atelier\atelier-solo\runtime` 还有一份开发态 kernel（不是安装，但会被跨安装互斥检测到——这是用户有意保留的测试对象）。
 
