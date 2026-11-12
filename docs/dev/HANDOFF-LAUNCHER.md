@@ -11,10 +11,11 @@
 启动器已经能装、起、停 Atelier Free，首启三步引导可用，主界面是**域能力面板（只读状态）**，
 设置分全局/安装两层。构建与测试干净（Rust 17 项、前端 2 项）。
 
-**验收版本：v0.1.15**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
+**验收版本：v0.1.16**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
 Windows 分段下载、安装器编码四处缺陷已修，见 §7.1–§7.3；视频管线 S03 的 `Expected str, got VPath`
 已定位为 Cython 注解 dict 类型校验并修复，见 §7.4；S04 术语层的 `target_invalid` 与失败日志缺原因
-一并修掉，见 §7.5；IndexTTS 的 vendored 代码补进发行包，见 §7.6）。
+一并修掉，见 §7.5；IndexTTS 的 vendored 代码补进发行包，见 §7.6；S05 的 `tts_path` 参数类型已修，
+见 §7.7）。
 
 ---
 
@@ -299,6 +300,25 @@ RuntimeError('Model load failed: IndexTTS 子模块未初始化，请执行:
 **验证**：本地跑 `prepare_engine_runtime.py` 得到 `vendored=335`，且
 `engine-code/domains/engines/media/indextts/indextts/infer_v2_5.py` 存在；发版后再从发行包核对同一路径。
 
+### 7.7 S05 `tts_path` 参数类型（2026-11-12，已修）
+
+**现象**：v0.1.15 上任务跑到 63%（S05），在「语速修正」之后失败：
+
+```text
+管线失败: Argument 'tts_path' has incorrect type (expected str, got WindowsPath)
+```
+
+**真因**：`s05_tts.py:168` 把 `ctx.native(res["path"])`（永远是 `pathlib.WindowsPath`）传给
+`TranslationPair.set_dub(tts_path: str, …)`；Cython 对**参数注解**做硬校验，直接抛 `TypeError`。
+和 §7.4 是同一类问题（Cython annotation typing），只是这次卡在函数参数而不是 `dict` 下标。
+
+**修法**：`TranslationPair.set_dub` 与 `AudioUnit.set_dub` 的参数注解改成 `Any`，内部
+`str(tts_path)` 入库（字段本来就是 `Optional[str]`）。提交 `atelier-pipeline-video@df1cf24`，随 **v0.1.16** 发布。
+
+**经验**：编译后的 video 包对 `str` 注解参数是硬校验。以后凡是给带 `str` 注解的函数传
+`ctx.native()` 的返回值（Path）或 VPath，要么调用点显式 `str(...)`，要么把注解放宽；
+排查时看错误文案就能分辨：`Expected str, got …` 是容器下标，`Argument 'x' has incorrect type` 是参数。
+
 ---
 
 ## 8. 环境与操作
@@ -307,9 +327,10 @@ RuntimeError('Model load failed: IndexTTS 子模块未初始化，请执行:
 **测试**：`cargo test --release`（在 `src-tauri`）、`npm test`
 **开发**：`npm run tauri dev`
 
-**本机现状**：安装在 **`F:\Atelier`**（v0.1.13，2026-11-12 用启动器装；四域 `active`，跑过一版
-S03 修复后的真实任务）。本地仓库：`G:\Atelier\atelier-free` 在 `main@b31c364`（v0.1.15），
-`domains/pipelines` 在 `67343b6`、`domains/engines` 在 `b71ece3`、`definitions/video` 在 `15ae823`（均已推送）。
+**本机现状**：安装在 **`F:\Atelier`**（v0.1.15，2026-11-12 用启动器装；四域 `active`）。本地仓库：
+`G:\Atelier\atelier-free` 在 `main@a24634b`（v0.1.16），`domains/pipelines` 在 `67343b6`、
+`domains/engines` 在 `b71ece3`、`definitions/video` 在 `df1cf24`（均已推送；pipelines 里的 video gitlink
+仍停在 `15ae823`，不影响发布——video 走独立 artifact）。
 `G:\Atelier\atelier-solo\runtime` 还有一份开发态 kernel（不是安装，但会被跨安装互斥检测到——这是用户有意保留的测试对象）。
 
 **⚠ 别用 PowerShell 改源码文件**：`Get-Content`/`Set-Content` 在这个环境会按 GBK 读写，
