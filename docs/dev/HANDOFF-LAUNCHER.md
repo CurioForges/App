@@ -11,11 +11,12 @@
 启动器已经能装、起、停 Atelier Free，首启三步引导可用，主界面是**域能力面板（只读状态）**，
 设置分全局/安装两层。构建与测试干净（Rust 17 项、前端 2 项）。
 
-**验收版本：v0.1.17**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
+**验收版本：v0.1.18**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
 Windows 分段下载、安装器编码四处缺陷已修，见 §7.1–§7.3；视频管线 S03 的 `Expected str, got VPath`
 已定位为 Cython 注解 dict 类型校验并修复，见 §7.4；S04 术语层的 `target_invalid` 与失败日志缺原因
 一并修掉，见 §7.5；IndexTTS 的 vendored 代码补进发行包，见 §7.6；S05 的 `tts_path` 参数类型已修，
-见 §7.7；插件构建已关掉注解运行时校验并加了编译产物冒烟测试，见 §7.8）。
+见 §7.7；插件构建已关掉注解运行时校验并加了编译产物冒烟测试，见 §7.8；
+插件里 `open('vfs://…')` 因 Cython 缓存 builtins 而失效的问题已修，见 §7.9）。
 
 ---
 
@@ -338,6 +339,35 @@ RuntimeError('Model load failed: IndexTTS 子模块未初始化，请执行:
 
 提交 `atelier-pipeline-video@cf0e45c`，随 **v0.1.17** 发布。
 
+### 7.9 插件里 `open('vfs://…')` 失效（v0.1.17 暴露，已修）
+
+**现象**：整条管线跑到 S13 完成后失败：
+
+```text
+管线失败: [Errno 22] Invalid argument: 'vfs://jobs/<job_id>/summary/pipeline_summary.json'
+```
+
+重试时因为检查点全部命中，2 秒就挂在同一行。
+
+**真因**：Cython 在**模块导入时**把 `builtins.open` 缓存成模块级变量；而 `vfs://` 拦截是
+`PipelineDomain.boot()` 里才 patch `builtins.open` 的，**晚于插件导入**。于是编译后的
+`runner.py` 里的 `open('vfs://…')` 永远拿到未 patch 的内置 open，Windows 把 `vfs://` 当普通文件名
+→ `EINVAL`。
+
+- 实证：写一个 5 行 Cython 模块，`import` 之后再 patch `builtins.open`，模块里的 `open()` 仍走原函数并抛同样的错。
+- 为什么之前没暴露：管线从来没跑到 S13 之后写 summary 这一步。
+
+**修法（两层）**：
+
+1. `runner.py` 改用 `VPath.write_text`——host 层 `vfs.py` 用的是 `builtins.open` 运行时查找，
+   永远命中拦截器；`check_plugin.py` 增加源码扫描：插件里禁止 `open('vfs://…')`，CI 直接失败。
+2. `PipelineDomain.__init__` 在 `discover()` **之前**调用 `artifacts.enable(sdk)`，让随后导入的编译模块
+   缓存到已 patch 的 `open`；`boot()` 里的原调用保留（幂等）。
+
+**提交**：video `c0d9a23`、pipelines `8f2adf9`，随 **v0.1.18** 发布。
+
+**教训**：Cython 插件里不要直接调 `open()` 写 vfs 路径；一律走 `ctx.vfs_ops()` / `VPath` API。
+
 ---
 
 ## 8. 环境与操作
@@ -346,9 +376,9 @@ RuntimeError('Model load failed: IndexTTS 子模块未初始化，请执行:
 **测试**：`cargo test --release`（在 `src-tauri`）、`npm test`
 **开发**：`npm run tauri dev`
 
-**本机现状**：安装在 **`F:\Atelier`**（v0.1.16，2026-11-12 用启动器装；四域 `active`）。本地仓库：
-`G:\Atelier\atelier-free` 在 `main@3cc2f0f`（v0.1.17），`domains/pipelines` 在 `67343b6`、
-`domains/engines` 在 `b71ece3`、`definitions/video` 在 `cf0e45c`（均已推送；pipelines 里的 video gitlink
+**本机现状**：安装在 **`F:\Atelier`**（v0.1.17，2026-11-12 用启动器装；四域 `active`）。本地仓库：
+`G:\Atelier\atelier-free` 在 `main@a3184ea`（v0.1.18），`domains/pipelines` 在 `8f2adf9`、
+`domains/engines` 在 `b71ece3`、`definitions/video` 在 `c0d9a23`（均已推送；pipelines 里的 video gitlink
 仍停在 `15ae823`，不影响发布——video 走独立 artifact）。
 `G:\Atelier\atelier-solo\runtime` 还有一份开发态 kernel（不是安装，但会被跨安装互斥检测到——这是用户有意保留的测试对象）。
 
