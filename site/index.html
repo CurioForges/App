@@ -103,15 +103,22 @@
   <section class="wrap band" id="flow">
     <div class="band-head">
       <p class="eyebrow">02 / 一条链</p>
-      <h2>外语视频 → 可直接发布的中文成片</h2>
-      <p>整条链都在本机跑，中间产物留在项目目录里，哪一步不满意都能单独重跑。</p>
+      <h2>外语视频 → 可以直接发布的本地化成片</h2>
+      <p>输出语言不止中文：一条链跑完，想要哪种语言就出哪种语言的字幕与配音。</p>
+      <p class="langs" aria-label="支持的目标语言">
+        <span class="langs-label">目标语言</span>
+        <span class="lang">简体中文</span>
+        <span class="lang">English</span>
+        <span class="lang">日本語</span>
+        <span class="lang">Español</span>
+      </p>
     </div>
     <ol class="steps">
       <li><b>切分</b><span>按语义断句，去掉空白与静音</span></li>
       <li><b>识别</b><span>多语种 ASR，带时间轴与说话人</span></li>
       <li><b>翻译</b><span>跨段上下文一致，名词对照可控</span></li>
-      <li><b>配音</b><span>声纹克隆，多语种合成</span></li>
-      <li><b>字幕</b><span>中英双语，样式与断行可调</span></li>
+      <li><b>配音</b><span>声纹克隆，按目标语言合成</span></li>
+      <li><b>字幕</b><span>原文与译文对照，样式与断行可调</span></li>
       <li><b>封面</b><span>按画幅出图，文字自动避让</span></li>
       <li><b>成片</b><span>对轨、混音、导出竖屏与横屏</span></li>
     </ol>
