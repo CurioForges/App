@@ -1126,6 +1126,25 @@ mod tests {
         }
         let boot = variant_boot(&release).expect("kernel_boot.free.json 应当能取到");
         assert!(boot.contains("\"domains\""));
+
+        // 真拉一个小组件（2 MB 的 video 插件），验证「地址 → 字节 → sha256」这条链路
+        // 和发布出来的旁挂对得上。fetch_once 需要 AppHandle，这里用同一套地址与校验逻辑。
+        let video = plan.items.iter().find(|item| item.asset.starts_with("AtelierVideoPlugin"))
+            .expect("清单里应当有 video 插件");
+        let dir = std::env::temp_dir().join("atelier-live-download");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join(&video.asset);
+        let mut response = client().unwrap().get(&video.url).send().unwrap();
+        assert!(response.status().is_success());
+        let mut file = fs::File::create(&target).unwrap();
+        std::io::copy(&mut response, &mut file).unwrap();
+        drop(file);
+        let expected = http_text(&format!("{}.sha256", video.url)).unwrap();
+        let expected = expected.split_whitespace().next().unwrap().to_ascii_lowercase();
+        let actual = sha256_of(&target).unwrap();
+        assert_eq!(expected, actual, "下载内容与旁挂不一致");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// 下载缓存里组件最全的一份（本机跑过一次就会有）。没有就跳过，CI 上不存在。
