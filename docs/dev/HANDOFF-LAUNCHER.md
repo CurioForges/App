@@ -11,13 +11,13 @@
 启动器已经能装、起、停 Atelier Free，首启三步引导可用，主界面是**域能力面板（只读状态）**，
 设置分全局/安装两层。构建与测试干净（Rust 17 项、前端 2 项）。
 
-**验收版本：v0.1.19**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
+**验收版本：v0.1.20**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
 Windows 分段下载、安装器编码四处缺陷已修，见 §7.1–§7.3；视频管线 S03 的 `Expected str, got VPath`
 已定位为 Cython 注解 dict 类型校验并修复，见 §7.4；S04 术语层的 `target_invalid` 与失败日志缺原因
 一并修掉，见 §7.5；IndexTTS 的 vendored 代码补进发行包，见 §7.6；S05 的 `tts_path` 参数类型已修，
 见 §7.7；插件构建已关掉注解运行时校验并加了编译产物冒烟测试，见 §7.8；
 插件里 `open('vfs://…')` 因 Cython 缓存 builtins 而失效的问题已修，见 §7.9；
-多比例封面丢失与摘要文件位置已修，见 §7.10）。
+多比例封面丢失与摘要文件位置已修，见 §7.10；摘要已改为直接入内核数据库，见 §7.11）。
 
 ---
 
@@ -390,6 +390,24 @@ RuntimeError('Model load failed: IndexTTS 子模块未初始化，请执行:
 **注意**：这条任务的 S11 已经写进检查点，命中检查点的重跑会沿用旧结果；要看到多比例封面需要
 清检查点重跑（或新建任务）。
 
+### 7.11 摘要直接入库（v0.1.20）
+
+v0.1.19 把摘要写到 `data/pipelines/jobs/<job_id>/pipeline_summary.json`，仍然是**文件**。
+按产品判断：JSON 本身就是数据，应该直接进内核数据库，单独存文件、再登记对象都是绕路。
+
+**做法**：
+
+- `runner.py` 末尾 `storage_insert('summary:<job_id>', 'pipelines_job_summaries', {'job_id', 'outputs'}, upsert=True)`
+  —— 记录落在内核库的 `store_pipelines` 表，任务重跑按 `upsert` 覆盖；
+- web `jobSummary()`：`storageQuery({domain:'pipelines', category:'pipelines_job_summaries', filter:{job_id}, limit:1})`；
+- scheduler `_summary_outputs()`：`storage_query(domain='pipelines', category=…, filter={'job_id':…})`；
+- 两边都保留旧的「C4 summary 对象 / 原生文件」回落，只服务老任务。
+
+**提交**：video `d8b39b5`、web `082f0af`、scheduler `870500a`，随 **v0.1.20** 发布。
+
+**验证**：scheduler 的查询分支用假 SDK 单测（命中/回落两条）；`server.mjs` `node --check`；
+插件冒烟三条全过。
+
 ---
 
 ## 8. 环境与操作
@@ -399,8 +417,9 @@ RuntimeError('Model load failed: IndexTTS 子模块未初始化，请执行:
 **开发**：`npm run tauri dev`
 
 **本机现状**：安装在 **`F:\Atelier`**（v0.1.17，2026-11-12 用启动器装；四域 `active`）。本地仓库：
-`G:\Atelier\atelier-free` 在 `main@6a17783`（v0.1.19），`domains/pipelines` 在 `8f2adf9`、
-`domains/engines` 在 `b71ece3`、`definitions/video` 在 `28e645f`（均已推送；pipelines 里的 video gitlink
+`G:\Atelier\atelier-free` 在 `main@07c904e`（v0.1.20 之后又加了「域 artifact 镜像进 release」的 workflow 改动），
+`domains/pipelines` 在 `8f2adf9`、`domains/engines` 在 `b71ece3`、`domains/web` 在 `082f0af`、
+`domains/scheduler` 在 `870500a`、`definitions/video` 在 `d8b39b5`（均已推送；pipelines 里的 video gitlink
 仍停在 `15ae823`，不影响发布——video 走独立 artifact）。
 `G:\Atelier\atelier-solo\runtime` 还有一份开发态 kernel（不是安装，但会被跨安装互斥检测到——这是用户有意保留的测试对象）。
 
