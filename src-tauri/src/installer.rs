@@ -21,11 +21,6 @@ use tauri::{AppHandle, Emitter};
 
 use crate::variant_runtime::install_dir;
 
-/// Where the composition manifest lives.
-const COMPOSITION_REPO: &str = "NomadAnget/AtelierFree";
-/// Where the kernel runtime and the Python SDK come from.
-const KERNEL_REPO: &str = "NomadAnget/Atelier-Kernel";
-
 /// One progress sample. `percent: None` means "unknown": the UI shows a spinner, never a
 /// made-up number.
 #[derive(Clone, Debug, Serialize)]
@@ -119,7 +114,20 @@ struct Composition {
     train: String,
     kernel_version: String,
     sdk_version: String,
+    /// 镜像 release 的 tag（形如 `v0.1.20`）。发布脚本会写；缺省时退回任一域的分支。
+    #[serde(default)]
+    release: String,
     artifacts: BTreeMap<String, Component>,
+}
+
+impl Composition {
+    fn release_tag(&self) -> String {
+        let trimmed = self.release.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+        self.artifacts.values().next().map(|item| item.release.clone()).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,16 +163,29 @@ enum Placement {
 
 struct Item {
     name: &'static str,
-    repo: String,
-    release: String,
+    /// 完整下载地址；sidecar 校验用同一个地址加 `.sha256`。
+    url: String,
     asset: String,
     size: u64,
     placement: Placement,
+    /// 内核 release 没有 sha256 旁挂，这一项跳过逐字节校验（其余一律拒绝安装）。
+    kernel: bool,
 }
 
-/// `gh` must be authenticated: the distribution repos are private.
-/// Spawn without a console window: a flood of cmd windows is what the old script-based
-/// updater did not have to worry about.
+/// 组件从哪来：Free 仓库的 release 把各域 artifact 镜像成**公开**资产，启动器直接走
+/// `https://github.com/{repo}/releases/download/{tag}/{asset}`。
+///
+/// 这里不再依赖 GitHub CLI：普通用户机器上根本不会装 `gh`，以前第一次点安装就卡在
+/// 「无法执行 gh」。整条链路只用 HTTPS，唯一的外部程序是系统自带的 `certutil`（算 sha256）。
+const COMPOSITION_REPO: &str = "NomadAnget/AtelierFree";
+/// Where the kernel runtime and the Python SDK come from.
+const KERNEL_REPO: &str = "NomadAnget/Atelier-Kernel";
+/// 引导入口：最新 release 里的两个小文件。只有它们走 `latest`；组件全部按清单里的 tag 取，
+/// 保证一次安装用的始终是同一版（release 里的资产不可变）。
+const MANIFEST_URL: &str = "https://github.com/NomadAnget/AtelierFree/releases/latest/download/artifacts.json";
+const BOOT_ASSET: &str = "kernel_boot.free.json";
+
+/// Spawn without a console window: a flood of cmd windows is not acceptable.
 fn hidden(program: &str) -> Command {
     let mut command = Command::new(program);
     #[cfg(windows)]
@@ -175,38 +196,46 @@ fn hidden(program: &str) -> Command {
     command
 }
 
-fn gh(args: &[&str]) -> Result<String, String> {
-    let output = hidden("gh")
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("无法执行 gh：{e}（更新需要 GitHub CLI 与访问权限）"))?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gh {} 失败：{}", args.first().unwrap_or(&""), err.trim()));
+fn client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .user_agent("Atelier-Launcher")
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(1800))
+        .build()
+        .map_err(|e| format!("无法创建网络连接：{e}"))
+}
+
+fn asset_url(repo: &str, release: &str, asset: &str) -> String {
+    format!("https://github.com/{repo}/releases/download/{release}/{asset}")
+}
+
+fn http_text(url: &str) -> Result<String, String> {
+    let response = client()?.get(url).send()
+        .map_err(|e| format!("无法连接下载服务：{e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("下载服务返回 {}（{}）", status.as_u16(), url.rsplit('/').next().unwrap_or(url)));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    response.text().map_err(|e| format!("读取响应失败：{e}"))
 }
 
-pub fn latest_tag() -> Result<String, String> {
-    let tag = gh(&["api", &format!("repos/{COMPOSITION_REPO}/releases/latest"), "--jq", ".tag_name"])?;
-    let tag = tag.trim().to_string();
-    if tag.is_empty() { return Err("无法确定最新发行版本".into()) }
-    Ok(tag)
+/// 文件大小：给进度条一个真实分母。拿不到就返回 None，界面显示不确定态而不是瞎猜。
+fn http_size(url: &str) -> Option<u64> {
+    let response = client().ok()?.head(url).send().ok()?;
+    if !response.status().is_success() { return None }
+    response.headers().get(reqwest::header::CONTENT_LENGTH)?
+        .to_str().ok()?.parse().ok()
 }
 
-fn composition(tag: &str) -> Result<Composition, String> {
-    let path = format!("repos/{COMPOSITION_REPO}/contents/release/artifacts.json?ref={tag}");
-    let raw = gh(&["api", &path, "-H", "Accept: application/vnd.github.raw"])?;
+fn composition() -> Result<Composition, String> {
+    let raw = http_text(MANIFEST_URL)?;
     serde_json::from_str(&raw).map_err(|e| format!("组合配置解析失败：{e}"))
 }
 
-/// The domain list the distribution starts with: `kernel_boot.free.json` at the same tag.
-/// Taken from the release instead of being generated here, so the commands the kernel runs
-/// are always the ones that tag was assembled and tested with.
-fn variant_boot(tag: &str) -> Result<String, String> {
-    let path = format!("repos/{COMPOSITION_REPO}/contents/kernel_boot.free.json?ref={tag}");
-    let raw = gh(&["api", &path, "-H", "Accept: application/vnd.github.raw"])?;
+/// 内核启动配置：同一个 release 里的 `kernel_boot.free.json`。用发行版自己的文件而不是
+/// 在启动器里硬编码，免得组出来的树和域 artifact 对不上。
+fn variant_boot(release: &str) -> Result<String, String> {
+    let raw = http_text(&asset_url(COMPOSITION_REPO, release, BOOT_ASSET))?;
     let value = serde_json::from_str::<serde_json::Value>(&raw)
         .map_err(|e| format!("启动配置解析失败：{e}"))?;
     let domains = value.get("domains").and_then(|d| d.as_array()).map(|d| d.len()).unwrap_or(0);
@@ -214,25 +243,6 @@ fn variant_boot(tag: &str) -> Result<String, String> {
         return Err("启动配置里没有域声明，拒绝安装".into());
     }
     Ok(raw)
-}
-
-/// Asset sizes, so the overlay can show a real percentage instead of a spinner.
-fn asset_sizes(repo: &str, release: &str) -> BTreeMap<String, u64> {
-    let mut sizes = BTreeMap::new();
-    let Ok(json) = gh(&["release", "view", release, "--repo", repo, "--json", "assets"]) else {
-        return sizes;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else { return sizes };
-    if let Some(assets) = value.get("assets").and_then(|a| a.as_array()) {
-        for asset in assets {
-            let (Some(name), Some(size)) = (
-                asset.get("name").and_then(|n| n.as_str()),
-                asset.get("size").and_then(|s| s.as_u64()),
-            ) else { continue };
-            sizes.insert(name.to_string(), size);
-        }
-    }
-    sizes
 }
 
 fn plan(composition: &Composition) -> Plan {
@@ -246,36 +256,37 @@ fn plan(composition: &Composition) -> Plan {
     let mut items = Vec::new();
     for (key, label) in WANTED {
         let Some(component) = composition.artifacts.get(key) else { continue };
-        let sizes = asset_sizes(&component.repo, &component.release);
+        let url = asset_url(&component.repo, &component.release, &component.asset);
         items.push(Item {
             name: label,
-            repo: component.repo.clone(),
-            release: component.release.clone(),
-            size: sizes.get(&component.asset).copied().unwrap_or(0),
+            size: http_size(&url).unwrap_or(0),
+            url,
             asset: component.asset.clone(),
             placement: Placement::Tree,
+            kernel: false,
         });
     }
-    // Kernel runtime + SDK come from the kernel repo's own release.
+    // 内核运行时 + SDK 来自内核仓库自己的 release（本来就是公开的）。
     let kernel_release = format!("v{}", composition.kernel_version);
-    let sizes = asset_sizes(KERNEL_REPO, &kernel_release);
     let runtime = format!("Atelier-Kernel-runtime-windows-x86_64-v{}.zip", composition.kernel_version);
+    let runtime_url = asset_url(KERNEL_REPO, &kernel_release, &runtime);
     items.push(Item {
         name: "Kernel 运行时",
-        repo: KERNEL_REPO.into(),
-        release: kernel_release.clone(),
-        size: sizes.get(&runtime).copied().unwrap_or(0),
+        size: http_size(&runtime_url).unwrap_or(0),
+        url: runtime_url,
         asset: runtime,
         placement: Placement::Kernel,
+        kernel: true,
     });
     let sdk = format!("atelier_sdk-{}-py3-none-any.whl", composition.sdk_version);
+    let sdk_url = asset_url(KERNEL_REPO, &kernel_release, &sdk);
     items.push(Item {
         name: "Python SDK",
-        repo: KERNEL_REPO.into(),
-        release: kernel_release,
-        size: sizes.get(&sdk).copied().unwrap_or(0),
+        size: http_size(&sdk_url).unwrap_or(0),
+        url: sdk_url,
         asset: sdk,
         placement: Placement::Sdk,
+        kernel: true,
     });
     Plan { train: composition.train.clone(), items }
 }
@@ -306,59 +317,67 @@ pub(crate) fn sha256_of(path: &Path) -> Result<String, String> {
 }
 
 /// `gh` 的失败信息里带一整条带签名的下载 URL,对用户毫无意义,也长到把界面撑爆。
-/// 只留最后一段真正的原因(例如 `EOF`、`403`、`no assets match the file pattern`)。
+/// 只留最后一段真正的原因(例如 `EOF`、`403`)。
 fn reason_of(stderr: &str) -> String {
     let tail = stderr.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("").trim();
     let tail = tail.trim_start_matches(':').trim();
     if tail.is_empty() { "网络中断".to_string() } else { tail.chars().take(140).collect() }
 }
 
-/// 一次下载尝试:启动 `gh`、轮询文件大小喂进度条、等它退出。
+/// 一次下载尝试：流式写到磁盘，边写边喂进度。
+///
+/// 旧实现起一个 `gh` 子进程再轮询文件大小；现在直接 HTTPS，普通用户不需要装任何东西。
 fn fetch_once(
     app: &AppHandle, item: &Item, dir: &Path, index: usize, count: usize, base: u64, total_all: u64,
 ) -> Result<(), String> {
     let target = dir.join(&item.asset);
     // 上一次失败留下的半截文件会让第一帧读到满尺寸 → 进度先跳高再回退。每次重试都清掉。
     let _ = fs::remove_file(&target);
-    let mut child = hidden("gh")
-        .args(["release", "download", &item.release, "--repo", &item.repo,
-               "--pattern", &item.asset, "--dir", &dir.to_string_lossy(), "--clobber"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("无法启动 gh 下载：{e}"))?;
-
-    let started = Instant::now();
-    loop {
-        let done = fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
-        let rate = if started.elapsed().as_secs() > 0 { Some(done / started.elapsed().as_secs()) } else { None };
-        // 进度按组件数加权:每个文件各自 0→100% 占 1/count。不看标称总量,
-        // 避免元数据大小与实际字节不一致导致百分比忽高忽低(仍可能回退)。
-        let frac = if item.size > 0 { (done.min(item.size) as f64 / item.size as f64) as f32 } else { 0.0 };
-        let percent = Some(((index as f32 + frac) / (count.max(1) as f32)) * 100.0);
-        let mut progress = Progress::phase("download", format!("正在下载 {}", item.name))
-            .with_bytes(base + done, Some(total_all), rate)
-            .with_detail(format!("组件 {}/{} · {}", index + 1, count, item.name));
-        progress.percent = percent;
-        emit(app, progress);
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    let mut err = String::new();
-                    if let Some(mut stderr) = child.stderr.take() {
-                        use std::io::Read;
-                        let _ = stderr.read_to_string(&mut err);
-                    }
-                    return Err(reason_of(&err));
-                }
-                break;
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(200)),
-            Err(e) => return Err(format!("等待下载进程失败：{e}")),
-        }
+    let mut response = client()?.get(&item.url).send()
+        .map_err(|e| format!("无法连接下载地址：{e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("下载地址返回 {}", status.as_u16()));
     }
+    // 优先用响应头里的长度（比 HEAD 更准）；拿不到就退回清单里量到的值。
+    let expected = response.headers().get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(item.size);
+
+    let mut file = fs::File::create(&target).map_err(|e| format!("无法创建 {}：{e}", target.display()))?;
+    let started = Instant::now();
+    let mut done = 0u64;
+    let mut last_emit = Instant::now();
+    let mut buffer = vec![0u8; 256 * 1024];
+    {
+        use std::io::{Read, Write};
+        loop {
+            let read = response.read(&mut buffer).map_err(|e| format!("下载中断：{e}"))?;
+            if read == 0 { break }
+            file.write_all(&buffer[..read]).map_err(|e| format!("写入失败：{e}"))?;
+            done += read as u64;
+            // 每 200ms 刷一次界面就够，无需每个块都发事件。
+            if last_emit.elapsed() >= Duration::from_millis(200) || done >= expected {
+                last_emit = Instant::now();
+                let elapsed = started.elapsed().as_secs().max(1);
+                // 进度按组件数加权:每个文件各自 0→100% 占 1/count。
+                let frac = if expected > 0 { (done.min(expected) as f64 / expected as f64) as f32 } else { 0.0 };
+                let mut progress = Progress::phase("download", format!("正在下载 {}", item.name))
+                    .with_bytes(base + done, Some(total_all), Some(done / elapsed))
+                    .with_detail(format!("组件 {}/{} · {}", index + 1, count, item.name));
+                progress.percent = Some(((index as f32 + frac) / (count.max(1) as f32)) * 100.0);
+                emit(app, progress);
+            }
+        }
+        file.flush().ok();
+    }
+    drop(file);
     if !target.is_file() { return Err(format!("下载后找不到 {}", item.asset)) }
+    if expected > 0 && done < expected {
+        return Err(format!("下载不完整：{} / {}", done, expected));
+    }
     Ok(())
 }
 
@@ -402,41 +421,35 @@ fn download(app: &AppHandle, item: &Item, dir: &Path, index: usize, count: usize
 
 /// Compare against the published `.sha256` sidecar; a missing sidecar is a hard failure.
 fn verify(app: &AppHandle, item: &Item, file: &Path) -> Result<(), String> {
-    let dir = file.parent().ok_or("缓存目录缺失")?;
-    let sidecar = format!("{}.sha256", item.asset);
-    // 旁挂也可能碰上同一个 CDN 抖动,所以同样重试;三次都失败才下结论,
-    // 而且要分清"发布方没发"和"网络没拿到"——以前两者都报成前者,误导排查。
+    // 旁挂就在同一个 release 里，地址是资产地址加 `.sha256`；同样重试三次，
+    // 并区分「发布方没发」和「网络没拿到」——以前两者都报成前者，误导排查。
     let mut failure = String::new();
-    let mut status = None;
+    let mut expected = None;
     for attempt in 0..3 {
         if attempt > 0 { thread::sleep(Duration::from_secs(1 << attempt)) }
-        let output = hidden("gh")
-            .args(["release", "download", &item.release, "--repo", &item.repo,
-                   "--pattern", &sidecar, "--dir", &dir.to_string_lossy(), "--clobber"])
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
-            .output()
-            .map_err(|e| format!("无法下载校验文件：{e}"))?;
-        if output.status.success() { status = Some(true); break }
-        failure = reason_of(&String::from_utf8_lossy(&output.stderr));
+        match http_text(&format!("{}.sha256", item.url)) {
+            Ok(text) => {
+                let digest = text.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+                if digest.len() == 64 { expected = Some(digest); }
+                break;
+            }
+            Err(error) => failure = reason_of(&error),
+        }
     }
-    if status.is_none() {
+    let Some(expected) = expected else {
         // Domains publish `<asset>.sha256`; the kernel release does not (yet). Refuse to skip
         // verification for a domain, but do not brick the update on the kernel runtime — the
         // gap is tracked and will be closed by publishing sidecars there.
-        if item.repo == KERNEL_REPO {
+        if item.kernel {
             emit(app, Progress::phase("verify", format!("跳过校验 {}", item.name))
                 .log(format!("{} 没有可用的 sha256 旁挂（{}），本次不做逐字节校验", item.asset, failure)));
             return Ok(());
         }
-        if failure.contains("no assets match") || failure.contains("not found") {
-            return Err(format!("发布方没有提供 {} 的 sha256 旁挂，拒绝安装", item.asset));
+        if failure.contains("404") {
+            return Err(format!("发布包缺少 {} 的 sha256 旁挂，拒绝安装", item.asset));
         }
         return Err(format!("无法下载 {} 的校验文件：{}", item.asset, failure));
-    }
-    let expected = fs::read_to_string(dir.join(&sidecar))
-        .map_err(|e| e.to_string())?
-        .trim()
-        .to_ascii_lowercase();
+    };
     let actual = sha256_of(file)?;
     if expected != actual {
         return Err(format!("{} 校验失败：{} ≠ {}", item.asset, &actual[..12], &expected[..12.min(expected.len())]));
@@ -875,9 +888,13 @@ pub fn run(app: &AppHandle) -> Result<String, String> { run_with(app, true) }
 /// start=false 只装不启动、不预热（首次安装用：装完先进卡片页，再单独预热）。
 pub fn run_with(app: &AppHandle, start: bool) -> Result<String, String> {
     emit(app, Progress::phase("resolve", "正在读取组合配置"));
-    let tag = latest_tag()?;
-    let version = tag.trim_start_matches('v').to_string();
-    let composition = composition(&tag)?;
+    let composition = composition()?;
+    // 版本号取自清单里的镜像 release（v0.1.20 → 0.1.20），组件也全部按这个 tag 取。
+    let release = composition.release_tag();
+    let version = release.trim_start_matches('v').to_string();
+    if version.is_empty() {
+        return Err("组合配置里没有 release 字段，拒绝安装".into());
+    }
     let plan = plan(&composition);
     let total: u64 = plan.items.iter().map(|i| i.size).sum();
     emit(app, Progress::phase("plan", format!("发行版 {}（{} 个组件）", plan.train, plan.items.len()))
@@ -926,8 +943,8 @@ pub fn run_with(app: &AppHandle, start: bool) -> Result<String, String> {
     }
     // 启动配置来自同一个 tag:域清单、命令路径都由发行版自己写,启动器不硬编码,
     // 免得组出来的树和域 artifact 对不上。
-    emit(app, Progress::phase("stage", "写入启动配置").log(format!("读取 {} 的 kernel_boot.free.json", tag)));
-    let boot = variant_boot(&tag)?;
+    emit(app, Progress::phase("stage", "写入启动配置").log(format!("读取 {} 的 {BOOT_ASSET}", release)));
+    let boot = variant_boot(&release)?;
     fs::write(tree.join("kernel_boot.json"), boot).map_err(|e| format!("无法写入 kernel_boot.json：{e}"))?;
 
     emit(app, Progress::phase("swap", "正在换入发行文件"));
@@ -1083,6 +1100,34 @@ pub async fn prewarm_only(app: AppHandle) -> Result<Option<u16>, String> {
 mod tests {
     use super::*;
 
+    /// 联网回归：确认真实发布的清单能被匿名解析，且每个组件都真的存在（HEAD 200）。
+    /// 默认忽略，手动跑：`cargo test --release -- --ignored live_manifest`
+    #[test]
+    #[ignore]
+    fn live_manifest_resolves_to_public_assets() {
+        let composition = composition().expect("清单应当能匿名取到");
+        let release = composition.release_tag();
+        assert!(release.starts_with('v'), "清单缺少 release 字段，实际 {release:?}");
+        for (key, component) in &composition.artifacts {
+            assert_eq!(component.repo, COMPOSITION_REPO, "{key} 没有镜像到 Free 仓库");
+        }
+        let plan = plan(&composition);
+        assert_eq!(plan.items.len(), 7, "五个域 + 内核 + SDK");
+        for item in &plan.items {
+            assert!(item.url.starts_with("https://github.com/"), "{}", item.url);
+            let size = http_size(&item.url);
+            assert!(size.unwrap_or(0) > 0, "{} 取不到大小：{}", item.asset, item.url);
+            // 旁挂也必须可匿名取到（内核除外）。
+            if !item.kernel {
+                let sidecar = http_text(&format!("{}.sha256", item.url))
+                    .unwrap_or_else(|e| panic!("{} 缺旁挂：{e}", item.asset));
+                assert_eq!(sidecar.split_whitespace().next().unwrap_or("").len(), 64);
+            }
+        }
+        let boot = variant_boot(&release).expect("kernel_boot.free.json 应当能取到");
+        assert!(boot.contains("\"domains\""));
+    }
+
     /// 下载缓存里组件最全的一份（本机跑过一次就会有）。没有就跳过，CI 上不存在。
     fn cached_artifacts() -> Option<PathBuf> {
         let base = std::env::var_os("LOCALAPPDATA")
@@ -1123,11 +1168,11 @@ mod tests {
         };
         Item {
             name: "test",
-            repo: String::new(),
-            release: String::new(),
+            url: String::new(),
             size: fs::metadata(path).map(|m| m.len()).unwrap_or(0),
             asset,
             placement,
+            kernel: false,
         }
     }
 

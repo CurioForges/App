@@ -32,12 +32,33 @@ fn hidden(program: &str) -> Command {
     command
 }
 
-fn gh(args: &[&str]) -> Result<String, String> {
-    let output = hidden("gh").args(args).output().map_err(|e| format!("无法执行 gh：{e}"))?;
-    if !output.status.success() {
-        return Err(format!("gh 失败：{}", String::from_utf8_lossy(&output.stderr).trim()));
+/// 启动器自己的更新也全走匿名 HTTPS：用户机器上没有 `gh`，也不该要求他们装。
+fn client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .user_agent("Atelier-Launcher")
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(900))
+        .build()
+        .map_err(|e| format!("无法创建网络连接：{e}"))
+}
+
+fn http_text(url: &str) -> Result<String, String> {
+    let response = client()?.get(url).send().map_err(|e| format!("无法连接更新服务：{e}"))?;
+    let status = response.status();
+    if !response.status().is_success() && status.as_u16() != 404 {
+        return Err(format!("更新服务返回 {}", status.as_u16()));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    response.text().map_err(|e| e.to_string())
+}
+
+fn download_to(url: &str, target: &Path) -> Result<(), String> {
+    let mut response = client()?.get(url).send().map_err(|e| format!("下载失败：{e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("下载失败：HTTP {}", response.status().as_u16()));
+    }
+    let mut file = fs::File::create(target).map_err(|e| format!("无法写入 {}：{e}", target.display()))?;
+    std::io::copy(&mut response, &mut file).map_err(|e| format!("写入失败：{e}"))?;
+    Ok(())
 }
 
 /// 当前启动器版本:编译期注入的包版本。
@@ -68,10 +89,11 @@ fn is_newer(latest: &str, current: &str) -> bool {
 
 pub fn check() -> Result<SelfUpdate, String> {
     let current = current_version();
-    // 还没发过 release 时 gh 返回 404:这不是错误,是"暂时没有新版本"。
-    let latest_raw = match gh(&["api", &format!("repos/{REPO}/releases/latest"), "--jq", ".tag_name"]) {
+    let api = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    // 还没发过 release 时 API 返回 404:这不是错误,是"暂时没有新版本"。
+    let body = match http_text(&api) {
         Ok(text) => text,
-        Err(error) if error.contains("Not Found") || error.contains("404") => {
+        Err(error) if error.contains("404") => {
             return Ok(SelfUpdate {
                 current: current.clone(),
                 latest: current,
@@ -81,9 +103,14 @@ pub fn check() -> Result<SelfUpdate, String> {
         }
         Err(error) => return Err(error),
     };
-    let latest = latest_raw.trim().trim_start_matches('v').to_string();
-    let notes = gh(&["api", &format!("repos/{REPO}/releases/latest"), "--jq", ".body"])
-        .unwrap_or_default();
+    let value: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("无法解析版本信息：{e}"))?;
+    let latest = value.get("tag_name").and_then(|tag| tag.as_str()).unwrap_or("")
+        .trim().trim_start_matches('v').to_string();
+    if latest.is_empty() {
+        return Err("版本信息里没有 tag".into());
+    }
+    let notes = value.get("body").and_then(|body| body.as_str()).unwrap_or("");
     Ok(SelfUpdate {
         available: is_newer(&latest, &current),
         latest,
@@ -97,26 +124,13 @@ pub fn download(tag: &str) -> Result<PathBuf, String> {
     let dir = updates_dir()?;
     let target = dir.join(format!("atelier-{tag}.new.exe"));
     let _ = fs::remove_file(&target);
-    let status = hidden("gh")
-        .args(["release", "download", &format!("v{tag}"), "--repo", REPO,
-               "--pattern", "atelier.exe", "--dir", &dir.to_string_lossy(), "--clobber"])
-        .status()
-        .map_err(|e| format!("下载失败：{e}"))?;
-    if !status.success() { return Err("下载新版本失败".into()) }
-    let downloaded = dir.join("atelier.exe");
-    if !downloaded.is_file() { return Err("下载后找不到 atelier.exe".into()) }
-    fs::rename(&downloaded, &target).map_err(|e| e.to_string())?;
+    let release = format!("v{tag}");
+    download_to(&format!("https://github.com/{REPO}/releases/download/{release}/atelier.exe"), &target)?;
 
     // 校验:release 里若有 SHA256SUMS.txt 就必须对得上。
-    let sums = dir.join("SHA256SUMS.txt");
-    let _ = fs::remove_file(&sums);
-    let got = hidden("gh")
-        .args(["release", "download", &format!("v{tag}"), "--repo", REPO,
-               "--pattern", "SHA256SUMS.txt", "--dir", &dir.to_string_lossy(), "--clobber"])
-        .status();
-    if matches!(got, Ok(s) if s.success()) {
-        let expected = fs::read_to_string(&sums).unwrap_or_default()
-            .lines()
+    let sums_url = format!("https://github.com/{REPO}/releases/download/{release}/SHA256SUMS.txt");
+    if let Ok(sums) = http_text(&sums_url) {
+        let expected = sums.lines()
             .find(|line| line.contains("atelier.exe"))
             .and_then(|line| line.split_whitespace().next())
             .map(|hex| hex.to_ascii_lowercase());

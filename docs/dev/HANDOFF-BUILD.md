@@ -57,6 +57,21 @@ docs/screenshots/ 4 张 README 用的截图 + social-preview.png
 
 ### 3.1 目录契约：启动器必须组装出的树
 
+**组件来源（2026-11-12 改造）**：域 artifact 不再从私有域仓库取，Free 的装配流程把
+5 个 zip + `.sha256` + 改写后的 `artifacts.json` + `kernel_boot.free.json` **镜像进 Free 自己的
+release**；启动器全程匿名 HTTPS，**不依赖 `gh`**：
+
+```text
+清单   https://github.com/NomadAnget/AtelierFree/releases/latest/download/artifacts.json
+组件   https://github.com/{repo}/releases/download/{release}/{asset}      # repo/release 取自清单
+旁挂   {组件地址}.sha256
+内核   https://github.com/NomadAnget/Atelier-Kernel/releases/download/v{kernel}/{asset}
+```
+
+清单里的 `repo`/`release` 已改写成 Free 自己，`source_sha` 保留真实域仓库提交；顶层
+`release` 字段是镜像 tag（启动器拿它当 VERSION）。发布脚本写 JSON 时**不能带 BOM**。
+预览校验：`cargo test --release -- --ignored live_manifest`（真实联网，21 秒）。
+
 来源是 `AtelierFree/.github/workflows/assemble-distribution.yml`（发行包怎么组出来的），别自己发明：
 
 | artifact | zip 里的形状 | 装到根目录后 |
