@@ -63,12 +63,12 @@ const GATED_WEIGHTS = [
 function GatedList({onOpen}) {
   return <div className="gated-block">
     <div className="gated-head">
-      <strong>需要在网页上授权的权重</strong>
-      <span>每个仓库单独点一次 Agree，用同一个账号；不点会返回 403。</span>
+      <strong>需要授权的权重</strong>
+      <span>每个仓库点一次 Agree，用同一个账号；不点会返回 403。</span>
     </div>
     <ul className="gated-list">
-      {GATED_WEIGHTS.map(item => <li key={item.repo}>
-        <span className="gated-name">{item.name}<small>{item.why}</small></span>
+      {GATED_WEIGHTS.map(item => <li key={item.repo} title={`${item.name}：${item.why}`}>
+        <span className="gated-name">{item.name}</span>
         <code className="gated-repo">{item.repo}</code>
         <Button size="small" onClick={()=>onOpen(`https://huggingface.co/${item.repo}`)}>去授权</Button>
       </li>)}
@@ -224,6 +224,7 @@ export function Setup({onDone}) {
         note="用 Windows 数据保护加密保存在本机，只有当前 Windows 账号能解开 · 不写进配置文件、不出现日志 · 可以留空跳过"
       >
         <Input className="setting-input" type="password" value={token} onChange={event=>setToken(event.target.value)} placeholder="hf_…" autoComplete="off" spellCheck={false} aria-label="访问令牌"/>
+        <Button size="small" onClick={()=>openUrl('https://huggingface.co/settings/tokens')}>获取令牌</Button>
         <Button onClick={testToken} disabled={testing || !token.trim()}>{testing ? '验证中…' : '测试连接'}</Button>
       </SettingBar>,
       extra: <GatedList onOpen={openUrl}/>,

@@ -113,9 +113,9 @@
 .step-copy small{font-size:10.5px;color:var(--muted)}
 .head-count{flex:none;font:10.5px var(--mono);color:var(--muted);letter-spacing:.6px}
 
-.setup-body{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:16px;width:100%;max-width:1560px;margin:0 auto;padding:24px 30px 18px}
-.setup-intro h1{margin-top:6px;font-size:24px;font-weight:600;letter-spacing:-.3px;line-height:1.3}
-.setup-intro .lede{margin-top:8px;max-width:118ch;font-size:12.5px;line-height:1.7;color:var(--muted)}
+.setup-body{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:12px;width:100%;max-width:1560px;margin:0 auto;padding:18px 30px 16px}
+.setup-intro h1{margin-top:4px;font-size:24px;font-weight:600;letter-spacing:-.3px;line-height:1.3}
+.setup-intro .lede{margin-top:6px;max-width:118ch;font-size:12.5px;line-height:1.6;color:var(--muted)}
 
 /* One thin horizontal strip holds the whole setting. */
 .setting-block{display:grid;gap:7px}
@@ -130,18 +130,18 @@
 .setting-note:empty{display:none}
 .token-ok{font-size:11.5px;line-height:1.5;color:var(--accent)}
 
-/* 需要 gated 授权的权重：一行一个仓库，右边直接给「去授权」。 */
-.gated-block{display:grid;gap:10px;padding:14px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow)}
-.gated-head{display:grid;gap:3px}
-.gated-head strong{font-size:12.5px;line-height:1.4}
-.gated-head span{font-size:11px;line-height:1.6;color:var(--muted)}
-.gated-list{display:grid;gap:0;margin:0;padding:0;list-style:none;border-top:1px solid var(--line)}
-.gated-list li{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
-.gated-list li:last-child{border-bottom:0;padding-bottom:0}
-.gated-name{flex:none;width:132px;font-size:12px;line-height:1.45;font-weight:600}
-.gated-name small{display:block;font-size:10.5px;line-height:1.5;font-weight:400;color:var(--muted)}
-.gated-repo{flex:1;min-width:0;font-family:var(--mono);font-size:11px;color:var(--muted);overflow-wrap:anywhere}
-.gated-list .btn{flex:none}
+/* 需要 gated 授权的权重：两列紧凑排，一行一个仓库，右边「去授权」。
+   之前竖排四行带说明，把下面的教程图挤掉了一半。 */
+.gated-block{display:grid;gap:8px;padding:11px 14px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow)}
+.gated-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.gated-head strong{font-size:12px;line-height:1.4}
+.gated-head span{font-size:10.5px;line-height:1.5;color:var(--muted)}
+.gated-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 22px;margin:0;padding:0;list-style:none}
+.gated-list li{display:grid;grid-template-columns:104px minmax(0,1fr) auto;align-items:center;gap:12px;min-width:0;padding:6px 0;border-bottom:1px solid var(--line)}
+.gated-list li:nth-last-child(-n+2){border-bottom:0;padding-bottom:2px}
+.gated-name{font-size:11.5px;line-height:1.4;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gated-repo{min-width:0;font-family:var(--mono);font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gated-list .btn{flex:none;padding:5px 10px;font-size:11.5px;line-height:1}
 
 /* Tutorial steps sit side by side under the setting. */
 .tutorial-row{display:grid;grid-template-columns:repeat(var(--columns,2),minmax(0,1fr));gap:12px;align-items:start}
