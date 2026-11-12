@@ -146,22 +146,45 @@ pub fn download(tag: &str) -> Result<PathBuf, String> {
 }
 
 /// 写换文件脚本并让它在本进程退出后接手。`current` 是正在运行的 exe。
+///
+/// 两个坑都在这里改掉了：
+/// * 旧脚本把进程号存进 `$pid` —— 那是 PowerShell 的**只读自动变量**，赋值会直接抛错，
+///   脚本一启动就死，什么也没做；
+/// * 脚本现在把每一步写进 `apply-update.log`，出错不再是无痕失败。
 pub fn write_apply_script(new_exe: &Path, current: &Path) -> Result<PathBuf, String> {
     let dir = updates_dir()?;
     let script = dir.join("apply-update.ps1");
+    let log = dir.join("apply-update.log");
     let old = dir.join("atelier.old.exe");
     let body = format!(
         "$ErrorActionPreference='Stop'\r\n\
-         $pid = {pid}\r\n\
-         while (Get-Process -Id $pid -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 300 }}\r\n\
-         Move-Item -LiteralPath '{current}' -Destination '{old}' -Force\r\n\
+         $log = '{log}'\r\n\
+         function Say($m) {{ \"$(Get-Date -Format 'HH:mm:ss') $m\" | Out-File -FilePath $log -Append -Encoding utf8 }}\r\n\
+         $launcherPid = {pid}\r\n\
+         Say \"等待启动器退出 (pid $launcherPid)\"\r\n\
+         $deadline = (Get-Date).AddSeconds(60)\r\n\
+         while (Get-Process -Id $launcherPid -ErrorAction SilentlyContinue) {{\r\n\
+           if ((Get-Date) -gt $deadline) {{ Say '启动器 60 秒内没有退出，放弃本次更新'; exit 1 }}\r\n\
+           Start-Sleep -Milliseconds 300\r\n\
+         }}\r\n\
+         # 文件锁可能还没释放，重试几次再判定失败\r\n\
+         $tries = 0\r\n\
+         while ($true) {{\r\n\
+           try {{ Move-Item -LiteralPath '{current}' -Destination '{old}' -Force; break }}\r\n\
+           catch {{ $tries++; if ($tries -ge 10) {{ Say \"旧文件替换失败: $_\"; exit 1 }}; Start-Sleep -Milliseconds 500 }}\r\n\
+         }}\r\n\
+         Say '旧版本已让位'\r\n\
          try {{\r\n\
            Move-Item -LiteralPath '{new_exe}' -Destination '{current}' -Force\r\n\
+           Say '新版本已就位，正在启动'\r\n\
            Start-Process -FilePath '{current}'\r\n\
          }} catch {{\r\n\
+           Say \"换入新版本失败: $_\"\r\n\
            Move-Item -LiteralPath '{old}' -Destination '{current}' -Force\r\n\
-           throw\r\n\
+           Start-Process -FilePath '{current}'\r\n\
+           exit 1\r\n\
          }}\r\n",
+        log = log.display(),
         pid = std::process::id(),
         current = current.display(),
         old = old.display(),
@@ -185,14 +208,21 @@ pub async fn check_self_update() -> Result<SelfUpdate, String> {
     tauri::async_runtime::spawn_blocking(check).await.map_err(|e| e.to_string())?
 }
 
-/// 下载 → 校验 → 写换文件脚本 → 拉起脚本。返回后调用方应退出,让脚本接手换文件。
+/// 下载 → 校验 → 写换文件脚本 → 拉起脚本 → **退出自己**。
+///
+/// 以前少最后一步：界面提示「即将退出」，可进程一直活着，脚本在 `while (Get-Process)` 里
+/// 等一个永远不退的 pid，于是什么都不会发生 —— 这就是「更新启动器不起作用」。
 #[tauri::command]
-pub async fn apply_self_update(tag: String) -> Result<(), String> {
+pub async fn apply_self_update(app: tauri::AppHandle, tag: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let new_exe = download(&tag)?;
         let current = std::env::current_exe().map_err(|e| e.to_string())?;
         let script = write_apply_script(&new_exe, &current)?;
-        spawn_apply(&script)
+        spawn_apply(&script)?;
+        // 给脚本一点启动时间再退出，避免它一醒来就发现进程已消失（也能走到等待循环）。
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        app.exit(0);
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
