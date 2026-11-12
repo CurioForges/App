@@ -12,10 +12,11 @@
   <img alt="许可" src="https://img.shields.io/badge/许可-专有使用-6B6B6B?style=flat-square">
 </p>
 
+<p align="center">产品页：<a href="https://nomadanget.github.io/Atelier/">nomadanget.github.io/Atelier</a></p>
+
 ---
 
 ## Atelier 是什么
-
 Atelier 是一套装在 Windows 上的 **AI 创作工作台**：给它一个视频、一篇素材或一个想做的题目，它把重复的工序跑完——识别与切分、翻译、配音、字幕、封面、成片，最后整理好可以直接发布的东西。
 
 它把「模型」当零件用：语音识别、说话人分离、声纹、翻译、图像、语音合成，各司其职；你用到的能力按需加载，不需要自己去拼环境、跑脚本。

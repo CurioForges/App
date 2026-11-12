@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atelier · 桌面创作工作台</title>
+<meta name="description" content="Atelier 是把模型当零件用的本地创作工作台：视频翻译、创作管线、任务调度、模型能力都在一台 Windows 上跑完，作品与数据留在你自己的目录里。">
+<meta name="theme-color" content="#FAF7F0">
+<meta property="og:title" content="Atelier · 桌面创作工作台">
+<meta property="og:description" content="把重复的创作工序跑完：切分、识别、翻译、配音、字幕、封面、成片。本地运行，数据归你。">
+<meta property="og:type" content="website">
+<link rel="icon" href="assets/atelier-mark.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<a class="skip" href="#main">跳到正文</a>
+
+<header class="site-head">
+  <div class="wrap head-inner">
+    <a class="brand" href="#top" aria-label="Atelier 首页">
+      <img src="assets/atelier-mark.svg" alt="" width="34" height="38">
+      <span class="brand-word">atelier<small>CREATIVE SYSTEM</small></span>
+    </a>
+    <nav class="nav" aria-label="页面导航">
+      <a href="#capabilities">域能力</a>
+      <a href="#flow">一条链</a>
+      <a href="#ui">界面</a>
+      <a href="#start">开始使用</a>
+      <a href="#license">授权</a>
+    </nav>
+    <a class="ghost-btn" href="https://github.com/NomadAnget/Atelier" rel="noopener">GitHub</a>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero wrap" id="top">
+    <p class="eyebrow">ATELIER / CREATIVE SYSTEM</p>
+    <h1>让一句话、一段视频，<br>变成可以直接发布的作品</h1>
+    <p class="lead">
+      Atelier 是一套装在 Windows 上的本地创作工作台。给它一个视频、一篇素材或一个想做的题目，
+      它把重复的工序跑完——识别与切分、翻译、配音、字幕、封面、成片。
+      模型当零件用：用到的能力按需加载，不用自己拼环境、跑脚本。
+    </p>
+    <div class="cta-row">
+      <a class="btn primary" href="https://github.com/NomadAnget/Atelier/releases/latest" rel="noopener">
+        下载 Windows 版<span class="ver" data-release-version></span>
+      </a>
+      <a class="btn" href="#start">先看怎么装</a>
+    </div>
+    <ul class="facts">
+      <li>Windows 10 / 11 · x64</li>
+      <li>本地运行，不上传作品</li>
+      <li>数据、权重、环境都在你选的目录</li>
+    </ul>
+  </section>
+
+  <section class="wrap band" id="capabilities">
+    <div class="band-head">
+      <p class="eyebrow">01 / 域能力</p>
+      <h2>每一项是一个能力单元</h2>
+      <p>看清装了哪些能力、是否在运行。四个基础域随安装包到位，两个业务域按授权启用。</p>
+    </div>
+    <ul class="cards">
+      <li class="card">
+        <span class="dot" aria-hidden="true">WEB</span>
+        <h3>界面与工作台</h3>
+        <p>总览、任务、日志和设置页面；所有 HTTP 接口都由它提供。</p>
+      </li>
+      <li class="card">
+        <span class="dot" aria-hidden="true">SCHEDULER</span>
+        <h3>任务调度</h3>
+        <p>任务的排队、执行与状态机，发布链路也在这里。</p>
+      </li>
+      <li class="card">
+        <span class="dot" aria-hidden="true">PIPELINES</span>
+        <h3>创作管线</h3>
+        <p>把步骤编排成可运行的创作流程；具体管线以插件包形式加载。</p>
+      </li>
+      <li class="card">
+        <span class="dot" aria-hidden="true">ENGINES</span>
+        <h3>模型能力</h3>
+        <p>语音识别与分离、声纹、翻译、图像与 LLM 的本地执行入口。</p>
+      </li>
+      <li class="card muted">
+        <span class="tag">按授权启用</span>
+        <h3>频道监控</h3>
+        <p>频道接入、热点采集与闲时排产，为创作提供选题来源。</p>
+      </li>
+      <li class="card muted">
+        <span class="tag">按授权启用</span>
+        <h3>平台发布</h3>
+        <p>各平台账号登录态、发布任务与稿件回收。</p>
+      </li>
+    </ul>
+  </section>
+
+  <section class="wrap band" id="flow">
+    <div class="band-head">
+      <p class="eyebrow">02 / 一条链</p>
+      <h2>外语视频 → 可直接发布的中文成片</h2>
+      <p>整条链都在本机跑，中间产物留在项目目录里，哪一步不满意都能单独重跑。</p>
+    </div>
+    <ol class="steps">
+      <li><b>切分</b><span>按语义断句，去掉空白与静音</span></li>
+      <li><b>识别</b><span>多语种 ASR，带时间轴与说话人</span></li>
+      <li><b>翻译</b><span>跨段上下文一致，名词对照可控</span></li>
+      <li><b>配音</b><span>声纹克隆，多语种合成</span></li>
+      <li><b>字幕</b><span>中英双语，样式与断行可调</span></li>
+      <li><b>封面</b><span>按画幅出图，文字自动避让</span></li>
+      <li><b>成片</b><span>对轨、混音、导出竖屏与横屏</span></li>
+    </ol>
+  </section>
+
+  <section class="wrap band" id="ui">
+    <div class="band-head">
+      <p class="eyebrow">03 / 界面</p>
+      <h2>能力、任务、日志在同一处</h2>
+      <p>不跳网页、不开终端；装完直接进工作台。</p>
+    </div>
+    <div class="shots">
+      <figure>
+        <img src="assets/home.png" alt="域能力页：显示每项能力是否安装、是否在运行" loading="lazy">
+        <figcaption>一屏看清装了哪些能力、是否在运行</figcaption>
+      </figure>
+      <figure>
+        <img src="assets/tasks.png" alt="任务管理页：每个任务的进度、时长与产出" loading="lazy">
+        <figcaption>每个任务的进度、时长、源视频与产出都在一起</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="wrap band" id="start">
+    <div class="band-head">
+      <p class="eyebrow">04 / 开始使用</p>
+      <h2>三步，装在自己的盘上</h2>
+    </div>
+    <ol class="install">
+      <li>
+        <b>01 下载并打开</b>
+        <p>从 <a href="https://github.com/NomadAnget/Atelier/releases/latest" rel="noopener">Release</a> 取最新的
+        <code>atelier.exe</code>，双击即可，无需安装程序。</p>
+      </li>
+      <li>
+        <b>02 选两个目录</b>
+        <p>首次打开是三页设置，每页都有图解：权重放哪块盘、项目数据放哪、要不要填下载令牌（可留空）。</p>
+      </li>
+      <li>
+        <b>03 点「安装」，然后进工作台</b>
+        <p>组件下载完会自动启动并准备运行环境，进度在卡片上；之后的更新、备份、迁移都在同一个界面里。</p>
+      </li>
+    </ol>
+
+    <div class="split">
+      <div class="panel">
+        <h3>系统要求</h3>
+        <dl class="spec">
+          <dt>系统</dt><dd>Windows 10 / 11，64 位</dd>
+          <dt>磁盘</dt><dd>约 70 GB（组件 + 已构建的运行环境）；模型权重另算</dd>
+          <dt>显卡</dt><dd>可选。CPU 能跑通，GPU 快很多</dd>
+          <dt>网络</dt><dd>首次安装、更新与下载权重时需要</dd>
+        </dl>
+      </div>
+      <div class="panel">
+        <h3>留在你机器上的东西</h3>
+        <ul class="bullets">
+          <li>作品、数据库、日志：在你选的数据目录</li>
+          <li>模型权重：在你选的权重目录，可单独备份</li>
+          <li>运行环境：装在数据目录下的 <code>engine-root</code>，卸载不会删除</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap band" id="license">
+    <div class="band-head">
+      <p class="eyebrow">05 / 授权</p>
+      <h2>免费拿到工作台，按需加业务域</h2>
+      <p>界面与工作台、任务调度、创作管线、模型能力随安装包提供；频道监控与平台发布按授权启用。</p>
+    </div>
+    <div class="split">
+      <div class="panel">
+        <h3>包含</h3>
+        <ul class="bullets">
+          <li>四个基础域 + 视频翻译插件</li>
+          <li>本地运行，不限任务条数</li>
+          <li>版本更新</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>需要授权</h3>
+        <ul class="bullets">
+          <li>频道监控：订阅来源、热点采集、闲时排产</li>
+          <li>平台发布：多平台登录态、发布与稿件回收</li>
+          <li>授权与试用请联系作者</li>
+        </ul>
+        <a class="btn small" href="https://github.com/NomadAnget" rel="noopener">联系作者</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap foot-inner">
+    <p class="foot-brand">
+      <img src="assets/atelier-mark.svg" alt="" width="22" height="25">
+      atelier <span data-release-version></span>
+    </p>
+    <nav aria-label="页脚链接">
+      <a href="https://github.com/NomadAnget/Atelier" rel="noopener">源码仓库</a>
+      <a href="https://github.com/NomadAnget/Atelier/releases" rel="noopener">版本记录</a>
+      <a href="https://github.com/NomadAnget/Atelier/issues" rel="noopener">反馈问题</a>
+      <a href="https://github.com/NomadAnget/Atelier/blob/main/docs/%E4%BD%BF%E7%94%A8%E6%89%8B%E5%86%8C.md" rel="noopener">使用手册</a>
+      <a href="https://github.com/NomadAnget/Atelier/blob/main/THIRD-PARTY-NOTICES.md" rel="noopener">第三方声明</a>
+    </nav>
+    <p class="foot-note">模型与数据集归各自作者所有；Atelier 为专有软件，界面与文档保留所有权利。</p>
+  </div>
+</footer>
+
+<script>
+  // 只用公开 API 取最新版本号；取不到就保持按钮纯文字，不影响点击。
+  (async () => {
+    try {
+      const response = await fetch('https://api.github.com/repos/NomadAnget/Atelier/releases/latest', {
+        headers: { Accept: 'application/vnd.github+json' },
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      const version = String(data.tag_name || '').trim();
+      if (!version) return;
+      document.querySelectorAll('[data-release-version]').forEach(node => {
+        node.textContent = node.classList.contains('ver') ? ` v${version.replace(/^v/, '')}` : `v${version.replace(/^v/, '')}`;
+      });
+    } catch {
+      /* 离线或限流时静默跳过 */
+    }
+  })();
+</script>
+</body>
+</html>
