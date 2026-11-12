@@ -147,10 +147,11 @@ pub fn download(tag: &str) -> Result<PathBuf, String> {
 
 /// 写换文件脚本并让它在本进程退出后接手。`current` 是正在运行的 exe。
 ///
-/// 两个坑都在这里改掉了：
-/// * 旧脚本把进程号存进 `$pid` —— 那是 PowerShell 的**只读自动变量**，赋值会直接抛错，
-///   脚本一启动就死，什么也没做；
-/// * 脚本现在把每一步写进 `apply-update.log`，出错不再是无痕失败。
+/// 三个坑都在这里改掉了：
+/// * 旧脚本把进程号存进 `$pid` —— 那是 PowerShell 的**只读自动变量**，赋值直接抛错；
+/// * 脚本里有中文却没有 BOM，PowerShell 5.1 按 ANSI 解析，整个文件语法错误、一启动就死，
+///   而且死得悄无声息（和 `install.ps1` 当年同一个坑）。现在日志全用 ASCII + 写 BOM；
+/// * 每一步都写 `apply-update.log`，出错不再是无痕失败。
 pub fn write_apply_script(new_exe: &Path, current: &Path) -> Result<PathBuf, String> {
     let dir = updates_dir()?;
     let script = dir.join("apply-update.ps1");
@@ -159,27 +160,26 @@ pub fn write_apply_script(new_exe: &Path, current: &Path) -> Result<PathBuf, Str
     let body = format!(
         "$ErrorActionPreference='Stop'\r\n\
          $log = '{log}'\r\n\
-         function Say($m) {{ \"$(Get-Date -Format 'HH:mm:ss') $m\" | Out-File -FilePath $log -Append -Encoding utf8 }}\r\n\
+         function Say($m) {{ \"$(Get-Date -Format 'HH:mm:ss') $m\" | Out-File -FilePath $log -Append -Encoding ascii }}\r\n\
          $launcherPid = {pid}\r\n\
-         Say \"等待启动器退出 (pid $launcherPid)\"\r\n\
+         Say \"waiting for launcher pid $launcherPid to exit\"\r\n\
          $deadline = (Get-Date).AddSeconds(60)\r\n\
          while (Get-Process -Id $launcherPid -ErrorAction SilentlyContinue) {{\r\n\
-           if ((Get-Date) -gt $deadline) {{ Say '启动器 60 秒内没有退出，放弃本次更新'; exit 1 }}\r\n\
+           if ((Get-Date) -gt $deadline) {{ Say 'launcher still alive after 60s, giving up'; exit 1 }}\r\n\
            Start-Sleep -Milliseconds 300\r\n\
          }}\r\n\
-         # 文件锁可能还没释放，重试几次再判定失败\r\n\
          $tries = 0\r\n\
          while ($true) {{\r\n\
            try {{ Move-Item -LiteralPath '{current}' -Destination '{old}' -Force; break }}\r\n\
-           catch {{ $tries++; if ($tries -ge 10) {{ Say \"旧文件替换失败: $_\"; exit 1 }}; Start-Sleep -Milliseconds 500 }}\r\n\
+           catch {{ $tries++; if ($tries -ge 10) {{ Say \"cannot move old exe: $_\"; exit 1 }}; Start-Sleep -Milliseconds 500 }}\r\n\
          }}\r\n\
-         Say '旧版本已让位'\r\n\
+         Say 'old exe moved aside'\r\n\
          try {{\r\n\
            Move-Item -LiteralPath '{new_exe}' -Destination '{current}' -Force\r\n\
-           Say '新版本已就位，正在启动'\r\n\
+           Say 'new exe in place, starting it'\r\n\
            Start-Process -FilePath '{current}'\r\n\
          }} catch {{\r\n\
-           Say \"换入新版本失败: $_\"\r\n\
+           Say \"swap failed: $_\"\r\n\
            Move-Item -LiteralPath '{old}' -Destination '{current}' -Force\r\n\
            Start-Process -FilePath '{current}'\r\n\
            exit 1\r\n\
@@ -190,7 +190,10 @@ pub fn write_apply_script(new_exe: &Path, current: &Path) -> Result<PathBuf, Str
         old = old.display(),
         new_exe = new_exe.display(),
     );
-    fs::write(&script, body).map_err(|e| e.to_string())?;
+    // UTF-8 **with BOM**：PowerShell 5.1 靠 BOM 判断编码，没有就按 ANSI 读。
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(body.as_bytes());
+    fs::write(&script, bytes).map_err(|e| format!("无法写入更新脚本：{e}"))?;
     Ok(script)
 }
 
@@ -226,4 +229,34 @@ pub async fn apply_self_update(app: tauri::AppHandle, tag: String) -> Result<(),
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 换文件脚本必须是 **UTF-8 with BOM 且正文纯 ASCII**：
+    /// PowerShell 5.1 没有 BOM 就按 ANSI 读，中文注释会把整个脚本变成语法错误；
+    /// 它是在启动器退出之后跑的，失败时用户只看到"更新没反应"。
+    #[test]
+    fn apply_script_is_bom_ascii_and_avoids_reserved_pid() {
+        let dir = std::env::temp_dir().join("atelier-selfupdate-script-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let new_exe = dir.join("atelier-new.exe");
+        let current = dir.join("atelier.exe");
+        fs::write(&new_exe, b"x").unwrap();
+        fs::write(&current, b"x").unwrap();
+
+        let script = write_apply_script(&new_exe, &current).expect("应当能写出脚本");
+        let bytes = fs::read(&script).unwrap();
+        assert_eq!(&bytes[0..3], &[0xEF, 0xBB, 0xBF], "脚本必须带 UTF-8 BOM");
+        let text = String::from_utf8(bytes[3..].to_vec()).unwrap();
+        assert!(text.is_ascii(), "脚本正文必须是纯 ASCII，否则 PS 5.1 会按 ANSI 读错");
+        assert!(!text.contains("$pid "), "不能用 PowerShell 的只读自动变量 $pid");
+        assert!(text.contains("$launcherPid"));
+        assert!(text.contains(&current.display().to_string()));
+        assert!(text.contains(&new_exe.display().to_string()));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
