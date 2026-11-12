@@ -292,6 +292,23 @@ pub async fn open_runtime_path(app: AppHandle, kind: String) -> Result<(), Strin
     tauri::async_runtime::spawn_blocking(move || reveal(&app, &kind)).await.map_err(|e| e.to_string())?
 }
 
+/// 用系统浏览器打开链接。
+///
+/// 向导里要引导用户去 Hugging Face 给 gated 仓库点「Agree」，这些页面必须在浏览器里打开：
+/// 在 webview 里跳走会把整个应用变成那个网页。只放行 https，别的一律拒绝。
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("https://") {
+        return Err("只允许打开 https 链接".into());
+    }
+    std::process::Command::new("cmd.exe")
+        .args(["/c", "start", "", trimmed])
+        .spawn()
+        .map_err(|e| format!("无法打开浏览器：{e}"))?;
+    Ok(())
+}
+
 /// Put the launcher back into first-run setup.
 ///
 /// Only the `setup_complete` flag is cleared: the saved directories and the stored

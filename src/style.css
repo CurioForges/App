@@ -130,6 +130,19 @@
 .setting-note:empty{display:none}
 .token-ok{font-size:11.5px;line-height:1.5;color:var(--accent)}
 
+/* 需要 gated 授权的权重：一行一个仓库，右边直接给「去授权」。 */
+.gated-block{display:grid;gap:10px;padding:14px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow)}
+.gated-head{display:grid;gap:3px}
+.gated-head strong{font-size:12.5px;line-height:1.4}
+.gated-head span{font-size:11px;line-height:1.6;color:var(--muted)}
+.gated-list{display:grid;gap:0;margin:0;padding:0;list-style:none;border-top:1px solid var(--line)}
+.gated-list li{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
+.gated-list li:last-child{border-bottom:0;padding-bottom:0}
+.gated-name{flex:none;width:132px;font-size:12px;line-height:1.45;font-weight:600}
+.gated-name small{display:block;font-size:10.5px;line-height:1.5;font-weight:400;color:var(--muted)}
+.gated-repo{flex:1;min-width:0;font-family:var(--mono);font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.gated-list .btn{flex:none}
+
 /* Tutorial steps sit side by side under the setting. */
 .tutorial-row{display:grid;grid-template-columns:repeat(var(--columns,2),minmax(0,1fr));gap:12px;align-items:start}
 .tutorial-card{display:flex;flex-direction:column;min-width:0;margin:0;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--surface)}

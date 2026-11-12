@@ -46,6 +46,36 @@ function TutorialRow({items, columns}) {
   </div>;
 }
 
+/**
+ * 需要授权的权重清单。
+ *
+ * 上游状态由 atelier-free 的 `tools/model-sources.json` + 发布前探测脚本维护，
+ * 这里只镜像"哪些下载要过 gated 授权"这一层事实；改上游时两边一起改。
+ * 链接直接指向模型页：用户在那里点 Agree and access repository。
+ */
+const GATED_WEIGHTS = [
+  { name: '说话人分离', repo: 'pyannote/speaker-diarization-3.1', why: '分轨、识别谁在说话' },
+  { name: '语音活动 / 重叠检测', repo: 'pyannote/segmentation-3.0', why: '判断哪里有人声、几人同时说' },
+  { name: '声纹嵌入', repo: 'pyannote/wespeaker-voxceleb-resnet34-LM', why: '把同一人的音色归到一起' },
+  { name: '文字擦除基座', repo: 'black-forest-labs/FLUX.1-Kontext-dev', why: '擦掉画面里的文字再重绘' },
+];
+
+function GatedList({onOpen}) {
+  return <div className="gated-block">
+    <div className="gated-head">
+      <strong>需要在网页上授权的权重</strong>
+      <span>每个仓库单独点一次 Agree，用同一个账号；不点会返回 403。</span>
+    </div>
+    <ul className="gated-list">
+      {GATED_WEIGHTS.map(item => <li key={item.repo}>
+        <span className="gated-name">{item.name}<small>{item.why}</small></span>
+        <code className="gated-repo">{item.repo}</code>
+        <Button size="small" onClick={()=>onOpen(`https://huggingface.co/${item.repo}`)}>去授权</Button>
+      </li>)}
+    </ul>
+  </div>;
+}
+
 export function Setup({onDone}) {
   const [status, setStatus] = useState(null);
   const [step, setStep] = useState(0);
@@ -111,6 +141,12 @@ export function Setup({onDone}) {
     try { setTokenResult(await invoke('test_token', {token})); }
     catch (err) { setError(String(err)); }
     finally { setTesting(false); }
+  }
+
+  /** 授权页面在系统浏览器里打开：在 webview 里跳走会把应用变成那个网页。 */
+  async function openUrl(url) {
+    try { await invoke('open_url', {url}); }
+    catch (err) { setError(String(err)); }
   }
 
   async function finish() {
@@ -190,6 +226,7 @@ export function Setup({onDone}) {
         <Input className="setting-input" type="password" value={token} onChange={event=>setToken(event.target.value)} placeholder="hf_…" autoComplete="off" spellCheck={false} aria-label="访问令牌"/>
         <Button onClick={testToken} disabled={testing || !token.trim()}>{testing ? '验证中…' : '测试连接'}</Button>
       </SettingBar>,
+      extra: <GatedList onOpen={openUrl}/>,
       columns: 4,
       items: [
         {image:tokenSettings, step:'01 登录', title:'头像 → Settings', detail:'登录 huggingface.co，点右上角头像，菜单里选 Settings。'},
@@ -222,6 +259,7 @@ export function Setup({onDone}) {
       </div>
 
       {page.bar}
+      {page.extra}
 
       <TutorialRow items={page.items} columns={page.columns}/>
     </main>

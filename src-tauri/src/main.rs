@@ -227,6 +227,7 @@ fn main() {
             setup::reopen_setup,
             setup::open_runtime_path,
             setup::show_window,
+            setup::open_url,
             build_info,
             storage::storage_usage,
             self_update::check_self_update,
