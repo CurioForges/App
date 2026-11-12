@@ -33,13 +33,9 @@ fn hidden(program: &str) -> Command {
 }
 
 /// 启动器自己的更新也全走匿名 HTTPS：用户机器上没有 `gh`，也不该要求他们装。
+/// 与发行包下载共用同一条出网路径（含系统代理）。
 fn client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .user_agent("Atelier-Launcher")
-        .connect_timeout(std::time::Duration::from_secs(20))
-        .timeout(std::time::Duration::from_secs(900))
-        .build()
-        .map_err(|e| format!("无法创建网络连接：{e}"))
+    crate::net::client(900)
 }
 
 fn http_text(url: &str) -> Result<String, String> {

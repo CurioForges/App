@@ -196,13 +196,9 @@ fn hidden(program: &str) -> Command {
     command
 }
 
+/// 出网客户端走统一入口：真机常见"浏览器能开、启动器打不开"，是系统代理没被使用。
 fn client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .user_agent("Atelier-Launcher")
-        .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(1800))
-        .build()
-        .map_err(|e| format!("无法创建网络连接：{e}"))
+    crate::net::client(1800)
 }
 
 fn asset_url(repo: &str, release: &str, asset: &str) -> String {
@@ -227,9 +223,60 @@ fn http_size(url: &str) -> Option<u64> {
         .to_str().ok()?.parse().ok()
 }
 
+/// 清单缓存：上次成功取到的组合配置。
+///
+/// 断网、代理没起来、GitHub 抽风的时候，启动器仍然能显示版本和组件列表（下载仍然要网络），
+/// 不至于一打开就空白报错。
+fn manifest_cache_path() -> Option<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
+    let dir = base.join("Atelier");
+    let _ = fs::create_dir_all(&dir);
+    Some(dir.join("artifacts-cache.json"))
+}
+
 fn composition() -> Result<Composition, String> {
-    let raw = http_text(MANIFEST_URL)?;
-    serde_json::from_str(&raw).map_err(|e| format!("组合配置解析失败：{e}"))
+    // 1) 显式覆盖：`ATELIER_MANIFEST` 可以是本地文件路径，也可以是自定义 URL。
+    //    给离线安装/内网镜像留一个口子，不用改代码。
+    if let Ok(raw_override) = std::env::var("ATELIER_MANIFEST") {
+        let value = raw_override.trim();
+        if !value.is_empty() {
+            let raw = if value.starts_with("http://") || value.starts_with("https://") {
+                http_text(value)?
+            } else {
+                fs::read_to_string(value).map_err(|e| format!("读取本地清单失败：{e}"))?
+            };
+            return serde_json::from_str(&raw).map_err(|e| format!("组合配置解析失败：{e}"));
+        }
+    }
+    // 2) 正常路径：取远端，成功就刷新缓存。
+    match http_text(MANIFEST_URL) {
+        Ok(raw) => {
+            let parsed: Composition =
+                serde_json::from_str(&raw).map_err(|e| format!("组合配置解析失败：{e}"))?;
+            if let Some(path) = manifest_cache_path() {
+                let _ = fs::write(path, raw);
+            }
+            Ok(parsed)
+        }
+        Err(error) => {
+            // 3) 兜底：用上次成功的缓存，并在界面上说清楚这是缓存。
+            let cached = manifest_cache_path().and_then(|path| fs::read_to_string(path).ok());
+            match cached {
+                Some(raw) => {
+                    let parsed: Composition = serde_json::from_str(&raw)
+                        .map_err(|e| format!("组合配置解析失败：{e}"))?;
+                    trace(format!("manifest: 使用缓存（远端失败 {error}）"));
+                    Ok(parsed)
+                }
+                None => Err(format!(
+                    "无法读取更新源：{error}\n\
+                     如果这台机器访问 GitHub 需要代理，请先在系统代理里设置好（或设置环境变量 HTTPS_PROXY），再重试。\n\
+                     启动器当前出网：{}",
+                    crate::net::describe_proxy()
+                )),
+            }
+        }
+    }
 }
 
 /// 内核启动配置：同一个 release 里的 `kernel_boot.free.json`。用发行版自己的文件而不是

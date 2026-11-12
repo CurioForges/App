@@ -8,6 +8,7 @@ mod locations;
 // 迁移安装还没接到 UI（「⋯ → 迁移安装」）：先把这套原语留着，接上命令后去掉这个 allow。
 #[allow(dead_code)]
 mod migrate;
+mod net;
 mod self_update;
 mod settings;
 mod setup;
