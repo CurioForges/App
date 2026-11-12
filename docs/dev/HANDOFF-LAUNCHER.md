@@ -11,10 +11,10 @@
 启动器已经能装、起、停 Atelier Free，首启三步引导可用，主界面是**域能力面板（只读状态）**，
 设置分全局/安装两层。构建与测试干净（Rust 17 项、前端 2 项）。
 
-**验收版本：v0.1.14**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
+**验收版本：v0.1.15**（2026-11-12：四域可起、工作台可用、停止干净；pipelines zoneinfo、权重镜像取用、
 Windows 分段下载、安装器编码四处缺陷已修，见 §7.1–§7.3；视频管线 S03 的 `Expected str, got VPath`
 已定位为 Cython 注解 dict 类型校验并修复，见 §7.4；S04 术语层的 `target_invalid` 与失败日志缺原因
-一并修掉，见 §7.5）。
+一并修掉，见 §7.5；IndexTTS 的 vendored 代码补进发行包，见 §7.6）。
 
 ---
 
@@ -259,6 +259,46 @@ scheduler 记 `err=target_invalid`；而管线日志只有一句「管线失败�
 **提交**：video `15ae823`、pipelines `67343b6`（顺带把 pipelines 里指向 video 的 gitlink 从 `993368b` 更到新提交），
 随 **v0.1.14** 发布。
 
+### 7.6 IndexTTS 代码没进发行包（2026-11-12，已修）
+
+**现象**：v0.1.14 上任务跑到 **63%（S05 TTS）** 失败：
+
+```text
+engines.IndexTTSEngine 执行失败: map_concurrent 子进程失败:
+RuntimeError('Model load failed: IndexTTS 子模块未初始化，请执行:
+  git submodule update --init src/engines/media/indextts')
+```
+
+**先排除的**：不是权重目录问题。`G:\Atelier\atelier-solo\checkpoints` 里 `indextts-2.5` 在，
+同一次任务里 Whisper / LangId / SHAS 都从同一个目录加载成功。缺的是**代码**：
+安装目录 `engine-root/engine-code/domains/engines/media/` 只有 `indextts_tts.pyc`，没有 `indextts/`。
+
+**为什么缺**（三处排除 + CI 不拉 submodule）：
+
+| 位置 | 原来的行为 |
+| :-- | :-- |
+| `.github/workflows/artifact.yml` 的 checkout | 没有 `submodules: recursive`，CI 里子模块是空目录 |
+| `.github/workflows/artifact.yml` 运行时代码 staging | 显式跳过 `media/indextts` |
+| `packaging/prepare_engine_runtime.py` 的跳过集合 | 含 `indextts`，pyc 与资源两层都不碰它 |
+| `packaging/build.ps1`（宿主 Nuitka） | 同样跳过——这条**保留**，宿主进程不 import 它 |
+
+**修法**：
+
+- CI checkout 加 `submodules: recursive`（子模块是公开仓 `index-tts/index-tts`）；
+- staging 不再对 `media` 做特殊排除；
+- `prepare_engine_runtime.py` 在 pyc / 资源之后，把 `media/indextts` **原样**拷进
+  `engine-code/domains/engines/media/indextts`（源码，不参与 pyc 编译）。
+  `indextts_tts.py::_REPO_DIR` 正是按 `__file__` 旁边的 `indextts` 目录判定的，路径对上即可加载。
+
+产物 +38 MB（`indextts/` 25.6 MB + 其余资源）。
+
+**许可**：这份 vendored 代码是 **bilibili Model Use License**（允许再分发，要求保留版权与许可全文、
+把条款传递给下游、对改动做声明）。所以 `media/indextts/LICENSE` 随树原样进包；以后若改这份代码，
+发布页要写"改动未经原权利人背书"的声明。
+
+**验证**：本地跑 `prepare_engine_runtime.py` 得到 `vendored=335`，且
+`engine-code/domains/engines/media/indextts/indextts/infer_v2_5.py` 存在；发版后再从发行包核对同一路径。
+
 ---
 
 ## 8. 环境与操作
@@ -268,8 +308,8 @@ scheduler 记 `err=target_invalid`；而管线日志只有一句「管线失败�
 **开发**：`npm run tauri dev`
 
 **本机现状**：安装在 **`F:\Atelier`**（v0.1.13，2026-11-12 用启动器装；四域 `active`，跑过一版
-S03 修复后的真实任务）。本地仓库：`G:\Atelier\atelier-free` 在 `main@df7c1ab`（v0.1.14），
-`domains/pipelines` 在 `67343b6`、`definitions/video` 在 `15ae823`（均已推送）。
+S03 修复后的真实任务）。本地仓库：`G:\Atelier\atelier-free` 在 `main@b31c364`（v0.1.15），
+`domains/pipelines` 在 `67343b6`、`domains/engines` 在 `b71ece3`、`definitions/video` 在 `15ae823`（均已推送）。
 `G:\Atelier\atelier-solo\runtime` 还有一份开发态 kernel（不是安装，但会被跨安装互斥检测到——这是用户有意保留的测试对象）。
 
 **⚠ 别用 PowerShell 改源码文件**：`Get-Content`/`Set-Content` 在这个环境会按 GBK 读写，
