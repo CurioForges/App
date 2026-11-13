@@ -730,6 +730,44 @@ fn store_install_dir(app: &AppHandle, target: &Path) -> Result<(), String> {
 ///
 /// 只碰文件系统，不改设置、不删旧目录 —— 调用方在它成功之后才动旧位置，
 /// 这样任何一步失败都能原地退回。测试也直接打这一层。
+/// 速率平滑器。
+///
+/// 单帧差分（200 毫秒窗口）抖得厉害，界面上的速度和"剩余时间"会来回跳；
+/// 这里对瞬时速率做指数平滑，再让界面用 `剩余字节 / 速率` 算 ETA。
+struct RateMeter {
+    last_at: std::time::Instant,
+    last_bytes: u64,
+    smoothed: f64,
+}
+
+impl RateMeter {
+    fn new() -> Self {
+        Self { last_at: std::time::Instant::now(), last_bytes: 0, smoothed: 0.0 }
+    }
+
+    fn rate(&mut self, bytes: u64) -> u64 {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_at).as_secs_f64();
+        if elapsed <= 0.0 {
+            return self.smoothed as u64;
+        }
+        let instant = bytes.saturating_sub(self.last_bytes) as f64 / elapsed;
+        self.smoothed = if self.smoothed <= 0.0 {
+            instant
+        } else {
+            // 新样本占三成：既跟得上变化，又不会被单个大文件带飞。
+            self.smoothed * 0.7 + instant * 0.3
+        };
+        self.last_at = now;
+        self.last_bytes = bytes;
+        self.smoothed.max(0.0) as u64
+    }
+}
+
+/// 一次真正的搬家：复制 → 补联接 → 重写环境路径 → 自检 → 确认新位置能跑。
+///
+/// 只碰文件系统，不改设置、不删旧目录 —— 调用方在它成功之后才动旧位置，
+/// 这样任何一步失败都能原地退回。测试也直接打这一层。
 fn relocate_tree(
     root: &Path,
     target: &Path,
@@ -739,17 +777,14 @@ fn relocate_tree(
     let (share, measure) = start_measure(root);
     progress(share.tick(0, 0, 0));
     let mut last_tick = std::time::Instant::now();
-    let mut last_bytes = 0u64;
+    let mut meter = RateMeter::new();
     let copied = copy_tree(root, target, root, |files, bytes| {
         let now = std::time::Instant::now();
-        let elapsed = now.duration_since(last_tick).as_secs_f64();
-        if elapsed < 0.25 {
+        if now.duration_since(last_tick).as_secs_f64() < 0.25 {
             return;
         }
-        let rate = (bytes.saturating_sub(last_bytes) as f64 / elapsed) as u64;
         last_tick = now;
-        last_bytes = bytes;
-        progress(share.tick(bytes, files, rate));
+        progress(share.tick(bytes, files, meter.rate(bytes)));
     });
     // 统计线程要么已经结束，要么马上结束；等它一下，进度条才能落到 100%。
     let _ = measure.join();
@@ -854,17 +889,14 @@ fn move_data(app: &AppHandle, target: &Path) -> Result<RelocateReport, String> {
     emit(app, "copy", "正在统计要搬多少", current.display().to_string());
     let (share, measure) = start_measure(&current);
     let mut last_tick = std::time::Instant::now();
-    let mut last_bytes = 0u64;
+    let mut meter = RateMeter::new();
     let copied = copy_tree(&current, target, &current, |files, bytes| {
         let now = std::time::Instant::now();
-        let elapsed = now.duration_since(last_tick).as_secs_f64();
-        if elapsed < 0.25 {
+        if now.duration_since(last_tick).as_secs_f64() < 0.25 {
             return;
         }
-        let rate = (bytes.saturating_sub(last_bytes) as f64 / elapsed) as u64;
         last_tick = now;
-        last_bytes = bytes;
-        emit_copy(app, share.tick(bytes, files, rate));
+        emit_copy(app, share.tick(bytes, files, meter.rate(bytes)));
     });
     let _ = measure.join();
     let outcome = copied.map_err(|error| {

@@ -518,6 +518,14 @@ function UpdateOverlay({progress, log}) {
           const moving_ = progress?.job === 'relocate' ? progress : null;
           const pct = typeof moving_?.percent === 'number' ? Math.max(0, Math.min(100, moving_.percent)) : null;
           const gb = value => ((value || 0) / 1e9).toFixed(1);
+          // 剩余时间用「剩余字节 ÷ 平滑后的速率」；速率是后端做过指数平滑的，不会来回跳。
+          const remaining = moving_?.total && moving_.rate > 0
+            ? Math.max(0, moving_.total - (moving_.done || 0)) / moving_.rate
+            : null;
+          const etaText = remaining == null ? null
+            : remaining < 60 ? '不到 1 分钟'
+            : remaining < 3600 ? `约 ${Math.max(1, Math.round(remaining / 60))} 分钟`
+            : `约 ${Math.floor(remaining / 3600)} 小时 ${Math.round((remaining % 3600) / 60)} 分`;
           return <div className="relocate-progress" role="status" aria-live="polite">
             <div className={`relocate-bar ${pct == null ? 'is-indeterminate' : ''}`}>
               <span style={pct == null ? undefined : {width: `${pct}%`}}/>
@@ -530,6 +538,7 @@ function UpdateOverlay({progress, log}) {
               {typeof moving_?.rate === 'number'
                 ? <span>{`${(moving_.rate / 1048576).toFixed(1)} MB/s`}</span>
                 : null}
+              {etaText ? <span className="relocate-eta">{`还剩 ${etaText}`}</span> : null}
             </div>
             {moving_?.detail ? <p className="relocate-detail">{moving_.detail}</p> : null}
           </div>;
