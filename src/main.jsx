@@ -509,12 +509,15 @@ function UpdateOverlay({progress, log}) {
         </Button>
       </>}>
       <div className="relocate-body">
-        <p className="setting-path relocate-target" title={moveChoice?.target}>{moveChoice?.target}</p>
+        <div className="relocate-paths">
+          <span>从</span><code title={locations?.install}>{locations?.install || '当前安装位置'}</code>
+          <span>到</span><code title={moveChoice?.target}>{moveChoice?.target}</code>
+        </div>
         {moveError ? <p className="error-text" role="alert">{moveError}</p> : null}
         {moving && (() => {
           const moving_ = progress?.job === 'relocate' ? progress : null;
           const pct = typeof moving_?.percent === 'number' ? Math.max(0, Math.min(100, moving_.percent)) : null;
-          const gb = value => (value / 1e9).toFixed(1);
+          const gb = value => ((value || 0) / 1e9).toFixed(1);
           return <div className="relocate-progress" role="status" aria-live="polite">
             <div className={`relocate-bar ${pct == null ? 'is-indeterminate' : ''}`}>
               <span style={pct == null ? undefined : {width: `${pct}%`}}/>
@@ -522,8 +525,8 @@ function UpdateOverlay({progress, log}) {
             <div className="relocate-stats">
               <span>{pct == null ? (moving_?.label || '准备中…') : `${Math.round(pct)}%`}</span>
               {moving_?.total
-                ? <span>{`${gb(moving_.done || 0)} / ${gb(moving_.total)} GB`}</span>
-                : null}
+                ? <span>{`${gb(moving_.done)} / ${gb(moving_.total)} GB`}</span>
+                : moving_ ? <span>{`已搬 ${gb(moving_.done)} GB`}</span> : null}
               {typeof moving_?.rate === 'number'
                 ? <span>{`${(moving_.rate / 1048576).toFixed(1)} MB/s`}</span>
                 : null}

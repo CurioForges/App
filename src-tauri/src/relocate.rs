@@ -138,17 +138,29 @@ fn emit(app: &AppHandle, phase: &'static str, label: impl Into<String>, detail: 
 }
 
 /// 带字节数的迁移进度：界面在弹窗里画横向进度条 + 实时速度。
-fn emit_copy(app: &AppHandle, done: u64, files: u64, total: u64, rate: u64) {
-    let total = (total > 0).then_some(total);
-    let mut progress = Progress::phase("copy", "正在迁移")
-        .in_job("relocate")
-        .with_bytes(done, total, Some(rate))
-        .with_detail(format!(
+///
+/// 总数还在统计时（`tick.total_bytes == 0`）不说百分比，改说"已经数了多少个文件"，
+/// 这样几十万个文件的目录也不会看起来像卡住。
+fn emit_copy(app: &AppHandle, tick: CopyTick) {
+    let total = (tick.total_bytes > 0).then_some(tick.total_bytes);
+    let detail = match total {
+        Some(total) => format!(
             "{:.1} / {:.1} GB · {} 个文件",
-            done as f64 / 1e9,
-            total.unwrap_or(done) as f64 / 1e9,
-            files));
-    progress = progress.log(format!("{:.1} GB", done as f64 / 1e9));
+            tick.bytes as f64 / 1e9,
+            total as f64 / 1e9,
+            tick.files),
+        None => format!(
+            "已搬 {:.1} GB · {} 个文件（正在统计总数，已数 {} 个）",
+            tick.bytes as f64 / 1e9,
+            tick.files,
+            tick.scanned_files),
+    };
+    let label = if total.is_some() { "正在迁移" } else { "正在统计并迁移" };
+    let mut progress = Progress::phase("copy", label)
+        .in_job("relocate")
+        .with_bytes(tick.bytes, total, Some(tick.rate))
+        .with_detail(detail.clone());
+    progress = progress.log(detail);
     crate::installer::emit_progress(app, progress);
 }
 
@@ -204,6 +216,106 @@ fn check_target(kind: &str, current: &Path, target: &Path) -> Result<(), String>
         return Err(format!("{kind}不是空目录，请选一个空目录或新建一个。"));
     }
     Ok(())
+}
+
+/// 一次进度帧：界面拿它画条和读数。
+#[derive(Clone, Copy, Default)]
+struct CopyTick {
+    bytes: u64,
+    files: u64,
+    /// 0 表示总数还在统计中。
+    total_bytes: u64,
+    scanned_files: u64,
+    rate: u64,
+}
+
+/// 统计线程与复制线程共享的进度槽。
+///
+/// 先扫描再复制会白等好几分钟（几十万个文件、每个都要一次 stat），所以扫描和复制
+/// **同时跑**：界面先看到"已搬多少、多快"，总数出来之后进度条自动从不确定态切成百分比。
+#[derive(Default)]
+struct ScanShare {
+    total_bytes: std::sync::atomic::AtomicU64,
+    total_files: std::sync::atomic::AtomicU64,
+    scanned_files: std::sync::atomic::AtomicU64,
+    scanned_bytes: std::sync::atomic::AtomicU64,
+    done: std::sync::atomic::AtomicBool,
+}
+
+impl ScanShare {
+    fn scanned_files(&self) -> u64 {
+        self.scanned_files.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn scanned_bytes(&self) -> u64 {
+        self.scanned_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn total_bytes(&self) -> u64 {
+        self.total_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn tick(&self, bytes: u64, files: u64, rate: u64) -> CopyTick {
+        CopyTick {
+            bytes,
+            files,
+            total_bytes: self.total_bytes(),
+            scanned_files: self.scanned_files(),
+            rate,
+        }
+    }
+}
+
+/// 量一遍要搬多少字节。四个线程一起走目录：单个线程读目录树时瓶颈在 stat 上，
+/// 并行能把几十万个文件从"好几分钟"压到"十几秒"。
+///
+/// 只读元数据、不打开文件；遇到联接不算它的内容（反正不会复制）。
+fn measure_tree(root: &Path, share: &ScanShare) {
+    use std::sync::atomic::Ordering;
+    use std::sync::Mutex;
+
+    let queue = Mutex::new(vec![root.to_path_buf()]);
+    let workers = 4.min(std::thread::available_parallelism().map(|count| count.get()).unwrap_or(4));
+    std::thread::scope(|scope| {
+        for _ in 0..workers.max(1) {
+            scope.spawn(|| loop {
+                let next = {
+                    let Ok(mut queue) = queue.lock() else { return };
+                    queue.pop()
+                };
+                let Some(current) = next else { return };
+                let Ok(entries) = fs::read_dir(&current) else { continue };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let Ok(file_type) = entry.file_type() else { continue };
+                    if locations::is_link(&path) {
+                        continue;
+                    }
+                    if file_type.is_dir() {
+                        if let Ok(mut queue) = queue.lock() {
+                            queue.push(path);
+                        }
+                        continue;
+                    }
+                    if !file_type.is_file() {
+                        continue;
+                    }
+                    let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+                    share.scanned_files.fetch_add(1, Ordering::Relaxed);
+                    share.scanned_bytes.fetch_add(size, Ordering::Relaxed);
+                }
+            });
+        }
+    });
+    share.total_bytes.store(share.scanned_bytes(), Ordering::Relaxed);
+    share.total_files.store(share.scanned_files(), Ordering::Relaxed);
+    share.done.store(true, Ordering::Relaxed);
+}
+
+/// 在后台统计总数，立刻返回（复制不用等它）。
+fn start_measure(root: &Path) -> (std::sync::Arc<ScanShare>, std::thread::JoinHandle<()>) {
+    let share = std::sync::Arc::new(ScanShare::default());
+    let owned = share.clone();
+    let root = root.to_path_buf();
+    let handle = std::thread::spawn(move || measure_tree(&root, &owned));
+    (share, handle)
 }
 
 /// 复制整棵树。目录联接只记录不跟随，返回 `(相对路径, 指向)` 供事后原样重建。
@@ -504,31 +616,6 @@ fn store_install_dir(app: &AppHandle, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 先量一遍要搬多少字节：迁移进度条没有总数就只能转圈。
-/// 只读元数据、不打开文件；遇到联接不算它的内容（反正不会复制）。
-fn measure_tree(root: &Path) -> (u64, u64) {
-    let mut bytes = 0u64;
-    let mut files = 0u64;
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&current) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type() else { continue };
-            if locations::is_link(&path) {
-                continue;
-            }
-            if file_type.is_dir() {
-                stack.push(path);
-            } else if file_type.is_file() {
-                files += 1;
-                bytes += entry.metadata().map(|meta| meta.len()).unwrap_or(0);
-            }
-        }
-    }
-    (bytes, files)
-}
-
 /// 一次真正的搬家：复制 → 补联接 → 重写环境路径 → 自检 → 确认新位置能跑。
 ///
 /// 只碰文件系统，不改设置、不删旧目录 —— 调用方在它成功之后才动旧位置，
@@ -536,12 +623,12 @@ fn measure_tree(root: &Path) -> (u64, u64) {
 fn relocate_tree(
     root: &Path,
     target: &Path,
-    progress: &mut dyn FnMut(u64, u64, u64, u64),
+    progress: &mut dyn FnMut(CopyTick),
 ) -> Result<RelocateReport, String> {
     let mut report = RelocateReport { target: target.display().to_string(), ..Default::default() };
     let mut links = Vec::new();
-    progress(0, 0, 0, 0);
-    let (total_bytes, _) = measure_tree(root);
+    let (share, measure) = start_measure(root);
+    progress(share.tick(0, 0, 0));
     let mut last_tick = std::time::Instant::now();
     let mut last_bytes = 0u64;
     let mut copy = |files: u64, bytes: u64| {
@@ -553,13 +640,23 @@ fn relocate_tree(
         let rate = (bytes.saturating_sub(last_bytes) as f64 / elapsed) as u64;
         last_tick = now;
         last_bytes = bytes;
-        progress(bytes, files, total_bytes, rate);
+        progress(share.tick(bytes, files, rate));
     };
-    if let Err(error) = copy_tree(root, target, root, &mut report, &mut links, &mut copy) {
+    let copied = copy_tree(root, target, root, &mut report, &mut links, &mut copy);
+    // 统计线程要么已经结束，要么马上结束；等它一下，进度条才能落到 100%。
+    let _ = measure.join();
+    copied.map_err(|error| {
         let _ = remove_tree(target);
-        return Err(format!("迁移中断，旧安装没有改动：{error}"));
-    }
-    progress(report.copied_bytes, report.copied_files, total_bytes, 0);
+        format!("迁移中断，旧安装没有改动：{error}")
+    })?;
+    let total = share.total_bytes();
+    progress(CopyTick {
+        bytes: report.copied_bytes,
+        files: report.copied_files,
+        total_bytes: total,
+        scanned_files: report.copied_files,
+        rate: 0,
+    });
 
     recreate_links(target, root, &links)?;
     rewrite_environment_paths(target, root, &mut report)?;
@@ -570,7 +667,9 @@ fn relocate_tree(
     // 新位置至少要有一个可执行的内核，否则宁可回滚也不动旧目录。
     if !target.join("atelier-kernel.exe").is_file() {
         let _ = remove_tree(target);
-        return Err("迁移后的目录里没有 atelier-kernel.exe，已放弃本次迁移（旧安装未改动）。".into());
+        return Err(format!(
+            "{} 里没有 atelier-kernel.exe，看起来不是真正的安装目录；已放弃本次迁移（旧目录未改动）。",
+            root.display()));
     }
     Ok(report)
 }
@@ -586,9 +685,7 @@ fn move_install(app: &AppHandle, target: &Path) -> Result<RelocateReport, String
 
     emit(app, "copy", "正在统计要搬多少", root.display().to_string());
     let mut report = {
-        let mut sink = |bytes: u64, files: u64, total: u64, rate: u64| {
-            emit_copy(app, bytes, files, total, rate);
-        };
+        let mut sink = |tick: CopyTick| emit_copy(app, tick);
         relocate_tree(&root, target, &mut sink)?
     };
 
@@ -645,7 +742,7 @@ fn move_data(app: &AppHandle, target: &Path) -> Result<RelocateReport, String> {
     let mut report = RelocateReport { target: target.display().to_string(), ..Default::default() };
     let mut links = Vec::new();
     emit(app, "copy", "正在统计要搬多少", current.display().to_string());
-    let (total_bytes, _) = measure_tree(&current);
+    let (share, measure) = start_measure(&current);
     let mut last_tick = std::time::Instant::now();
     let mut last_bytes = 0u64;
     let mut progress = |files: u64, bytes: u64| {
@@ -657,13 +754,21 @@ fn move_data(app: &AppHandle, target: &Path) -> Result<RelocateReport, String> {
         let rate = (bytes.saturating_sub(last_bytes) as f64 / elapsed) as u64;
         last_tick = now;
         last_bytes = bytes;
-        emit_copy(app, bytes, files, total_bytes, rate);
+        emit_copy(app, share.tick(bytes, files, rate));
     };
-    if let Err(error) = copy_tree(&current, target, &current, &mut report, &mut links, &mut progress) {
+    let copied = copy_tree(&current, target, &current, &mut report, &mut links, &mut progress);
+    let _ = measure.join();
+    copied.map_err(|error| {
         let _ = remove_tree(target);
-        return Err(format!("迁移中断，数据没有改动：{error}"));
-    }
-    emit_copy(app, report.copied_bytes, report.copied_files, total_bytes, 0);
+        format!("迁移中断，数据没有改动：{error}")
+    })?;
+    emit_copy(app, CopyTick {
+        bytes: report.copied_bytes,
+        files: report.copied_files,
+        total_bytes: share.total_bytes(),
+        scanned_files: report.copied_files,
+        rate: 0,
+    });
 
     // 先把旧目录挪开（同盘改名，可回滚），再建联接。
     let backup = root.join(".data-previous");
@@ -843,8 +948,8 @@ mod tests {
         }).to_string()).expect("ledger");
 
         let mut phases = Vec::new();
-        let report = relocate_tree(&root, &target, &mut |bytes, files, total, rate| {
-            phases.push((bytes, files, total, rate));
+        let report = relocate_tree(&root, &target, &mut |tick| {
+            phases.push((tick.bytes, tick.files, tick.total_bytes, tick.rate));
         }).expect("relocate");
 
         assert!(target.join("atelier-kernel.exe").is_file());
@@ -872,7 +977,7 @@ mod tests {
         let target = base.join("target");
         fs::create_dir_all(&root).expect("root");
         fs::write(root.join("random.txt"), b"x").expect("file");
-        let error = relocate_tree(&root, &target, &mut |_, _, _, _| {}).expect_err("must fail");
+        let error = relocate_tree(&root, &target, &mut |_| {}).expect_err("must fail");
         assert!(error.contains("atelier-kernel.exe"), "{error}");
         assert!(!target.exists(), "失败时不该留下半个新目录");
         let _ = fs::remove_dir_all(&base);
