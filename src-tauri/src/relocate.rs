@@ -318,40 +318,150 @@ fn start_measure(root: &Path) -> (std::sync::Arc<ScanShare>, std::thread::JoinHa
     (share, handle)
 }
 
-/// 复制整棵树。目录联接只记录不跟随，返回 `(相对路径, 指向)` 供事后原样重建。
+/// 复制线程数。几十万个小文件的跨盘复制全是等待，多开线程才吃得满盘。
+const COPY_THREADS: usize = 16;
+
+/// 并行复制的产物：调用方拿它回填报告。
+struct CopyOutcome {
+    files: u64,
+    bytes: u64,
+    links: Vec<(PathBuf, PathBuf)>,
+    kept_links: Vec<String>,
+}
+
+/// 并行复制共享状态：16 个线程分摊目录，主线程每 200 毫秒报一次进度。
+struct CopyState {
+    queue: std::sync::Mutex<Vec<(PathBuf, PathBuf)>>,
+    queued: std::sync::atomic::AtomicUsize,
+    active: std::sync::atomic::AtomicUsize,
+    files: std::sync::atomic::AtomicU64,
+    bytes: std::sync::atomic::AtomicU64,
+    stop: std::sync::atomic::AtomicBool,
+    failure: std::sync::Mutex<Option<String>>,
+    links: std::sync::Mutex<Vec<(PathBuf, PathBuf)>>,
+    kept: std::sync::Mutex<Vec<String>>,
+}
+
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+impl CopyState {
+    fn new(src: &Path, dst: &Path) -> Self {
+        use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+        use std::sync::Mutex;
+        Self {
+            queue: Mutex::new(vec![(src.to_path_buf(), dst.to_path_buf())]),
+            queued: AtomicUsize::new(1),
+            active: AtomicUsize::new(COPY_THREADS),
+            files: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+            stop: AtomicBool::new(false),
+            failure: Mutex::new(None),
+            links: Mutex::new(Vec::new()),
+            kept: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+fn copy_worker(state: &CopyState, base: &Path) {
+    use std::sync::atomic::Ordering;
+    loop {
+        if state.stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let next = { lock(&state.queue).pop() };
+        let Some((current, current_target)) = next else {
+            // 队列空不等于收工：别的线程可能还在往下推目录。
+            if state.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            state.active.fetch_add(1, Ordering::AcqRel);
+            continue;
+        };
+        state.queued.fetch_sub(1, Ordering::AcqRel);
+        if let Err(error) = copy_directory(state, base, &current, &current_target) {
+            *lock(&state.failure) = Some(error);
+            state.stop.store(true, Ordering::Release);
+            return;
+        }
+    }
+}
+
+fn copy_directory(state: &CopyState, base: &Path, current: &Path, target_dir: &Path) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    if let Err(error) = fs::create_dir_all(target_dir) {
+        return Err(format!("无法创建 {}：{error}", target_dir.display()));
+    }
+    let entries = fs::read_dir(current).map_err(|error| format!("无法读取 {}：{error}", current.display()))?;
+    let mut pushed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let target = target_dir.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|error| format!("无法读取 {}：{error}", path.display()))?;
+        if file_type.is_symlink() || locations::is_link(&path) {
+            lock(&state.links).push((
+                path.strip_prefix(base).unwrap_or(&path).to_path_buf(),
+                fs::read_link(&path).unwrap_or_default(),
+            ));
+            lock(&state.kept).push(entry.file_name().to_string_lossy().to_string());
+            continue;
+        }
+        if file_type.is_dir() {
+            lock(&state.queue).push((path, target));
+            pushed += 1;
+            continue;
+        }
+        let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+        fs::copy(&path, &target).map_err(|error| format!("无法复制 {}：{error}", path.display()))?;
+        state.files.fetch_add(1, Ordering::Relaxed);
+        state.bytes.fetch_add(size, Ordering::Relaxed);
+    }
+    if pushed > 0 {
+        state.queued.fetch_add(pushed, Ordering::AcqRel);
+    }
+    Ok(())
+}
+
+/// 复制整棵树。目录联接只记录不跟随（`(相对路径, 指向)` 供事后原样重建）；
+/// 任何文件出错都会停下并返回第一个错误 —— 迁移宁可整体失败，也不搬出半个树。
 fn copy_tree(
     src: &Path,
     dst: &Path,
     base: &Path,
-    report: &mut RelocateReport,
-    links: &mut Vec<(PathBuf, PathBuf)>,
-    progress: &mut dyn FnMut(u64, u64),
-) -> Result<(), String> {
+    mut progress: impl FnMut(u64, u64),
+) -> Result<CopyOutcome, String> {
+    use std::sync::atomic::Ordering;
     fs::create_dir_all(dst).map_err(|error| format!("无法创建 {}：{error}", dst.display()))?;
-    let entries = fs::read_dir(src).map_err(|error| format!("无法读取 {}：{error}", src.display()))?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let target = dst.join(entry.file_name());
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("无法读取 {}：{error}", path.display()))?;
-        if file_type.is_symlink() || locations::is_link(&path) {
-            // 认不出来的联接也按联接处理：跳过比顺着它复制安全。
-            let relative = path.strip_prefix(base).unwrap_or(&path).to_path_buf();
-            links.push((relative, fs::read_link(&path).unwrap_or_default()));
-            report.kept_links.push(entry.file_name().to_string_lossy().to_string());
-            continue;
+    let state = CopyState::new(src, dst);
+    std::thread::scope(|scope| {
+        for _ in 0..COPY_THREADS {
+            scope.spawn(|| copy_worker(&state, base));
         }
-        if file_type.is_dir() {
-            copy_tree(&path, &target, base, report, links, progress)?;
-            continue;
+        // 主线程当计时器：每 200 毫秒把累计值推给界面。
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            progress(state.files.load(Ordering::Relaxed), state.bytes.load(Ordering::Relaxed));
+            if state.stop.load(Ordering::Relaxed) {
+                break;
+            }
+            if state.active.load(Ordering::Acquire) == 0 && state.queued.load(Ordering::Acquire) == 0 {
+                break;
+            }
         }
-        fs::copy(&path, &target).map_err(|error| format!("无法复制 {}：{error}", path.display()))?;
-        report.copied_files += 1;
-        report.copied_bytes += entry.metadata().map(|meta| meta.len()).unwrap_or(0);
-        progress(report.copied_files, report.copied_bytes);
+    });
+    if let Some(error) = lock(&state.failure).take() {
+        return Err(error);
     }
-    Ok(())
+    let links: Vec<(PathBuf, PathBuf)> = lock(&state.links).drain(..).collect();
+    let kept_links: Vec<String> = lock(&state.kept).drain(..).collect();
+    Ok(CopyOutcome {
+        files: state.files.load(Ordering::Relaxed),
+        bytes: state.bytes.load(Ordering::Relaxed),
+        links,
+        kept_links,
+    })
 }
 
 fn recreate_links(new_root: &Path, old_root: &Path, links: &[(PathBuf, PathBuf)]) -> Result<(), String> {
@@ -626,12 +736,11 @@ fn relocate_tree(
     progress: &mut dyn FnMut(CopyTick),
 ) -> Result<RelocateReport, String> {
     let mut report = RelocateReport { target: target.display().to_string(), ..Default::default() };
-    let mut links = Vec::new();
     let (share, measure) = start_measure(root);
     progress(share.tick(0, 0, 0));
     let mut last_tick = std::time::Instant::now();
     let mut last_bytes = 0u64;
-    let mut copy = |files: u64, bytes: u64| {
+    let copied = copy_tree(root, target, root, |files, bytes| {
         let now = std::time::Instant::now();
         let elapsed = now.duration_since(last_tick).as_secs_f64();
         if elapsed < 0.25 {
@@ -641,14 +750,16 @@ fn relocate_tree(
         last_tick = now;
         last_bytes = bytes;
         progress(share.tick(bytes, files, rate));
-    };
-    let copied = copy_tree(root, target, root, &mut report, &mut links, &mut copy);
+    });
     // 统计线程要么已经结束，要么马上结束；等它一下，进度条才能落到 100%。
     let _ = measure.join();
-    copied.map_err(|error| {
+    let outcome = copied.map_err(|error| {
         let _ = remove_tree(target);
         format!("迁移中断，旧安装没有改动：{error}")
     })?;
+    report.copied_files = outcome.files;
+    report.copied_bytes = outcome.bytes;
+    report.kept_links = outcome.kept_links;
     let total = share.total_bytes();
     progress(CopyTick {
         bytes: report.copied_bytes,
@@ -658,7 +769,7 @@ fn relocate_tree(
         rate: 0,
     });
 
-    recreate_links(target, root, &links)?;
+    recreate_links(target, root, &outcome.links)?;
     rewrite_environment_paths(target, root, &mut report)?;
     let (rebuild, warnings) = verify_environments(&venv_roots(target), root)?;
     report.rebuild = rebuild;
@@ -740,12 +851,11 @@ fn move_data(app: &AppHandle, target: &Path) -> Result<RelocateReport, String> {
 
     let root_data = root.join(crate::contract::DATA);
     let mut report = RelocateReport { target: target.display().to_string(), ..Default::default() };
-    let mut links = Vec::new();
     emit(app, "copy", "正在统计要搬多少", current.display().to_string());
     let (share, measure) = start_measure(&current);
     let mut last_tick = std::time::Instant::now();
     let mut last_bytes = 0u64;
-    let mut progress = |files: u64, bytes: u64| {
+    let copied = copy_tree(&current, target, &current, |files, bytes| {
         let now = std::time::Instant::now();
         let elapsed = now.duration_since(last_tick).as_secs_f64();
         if elapsed < 0.25 {
@@ -755,13 +865,15 @@ fn move_data(app: &AppHandle, target: &Path) -> Result<RelocateReport, String> {
         last_tick = now;
         last_bytes = bytes;
         emit_copy(app, share.tick(bytes, files, rate));
-    };
-    let copied = copy_tree(&current, target, &current, &mut report, &mut links, &mut progress);
+    });
     let _ = measure.join();
-    copied.map_err(|error| {
+    let outcome = copied.map_err(|error| {
         let _ = remove_tree(target);
         format!("迁移中断，数据没有改动：{error}")
     })?;
+    report.copied_files = outcome.files;
+    report.copied_bytes = outcome.bytes;
+    report.kept_links = outcome.kept_links;
     emit_copy(app, CopyTick {
         bytes: report.copied_bytes,
         files: report.copied_files,
@@ -822,11 +934,9 @@ mod tests {
     fn copy_without_progress(
         src: &Path,
         dst: &Path,
-        report: &mut RelocateReport,
-        links: &mut Vec<(PathBuf, PathBuf)>,
-    ) -> Result<(), String> {
-        let mut idle = |_: u64, _: u64| {};
-        copy_tree(src, dst, src, report, links, &mut idle)
+    ) -> Result<(u64, u64, Vec<(PathBuf, PathBuf)>, Vec<String>), String> {
+        let outcome = copy_tree(src, dst, src, |_, _| {})?;
+        Ok((outcome.files, outcome.bytes, outcome.links, outcome.kept_links))
     }
 
     #[test]
@@ -881,6 +991,25 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// 16 线程分摊目录：数量对不上就是队列计数错了（少搬或多搬都会在这里露出来）。
+    #[test]
+    fn parallel_copy_copies_every_file() {
+        let base = scratch("parallel");
+        let source = base.join("root");
+        for index in 0..120 {
+            let dir = source.join(format!("d{index:03}"));
+            fs::create_dir_all(&dir).expect("dir");
+            for file in 0..20 {
+                fs::write(dir.join(format!("f{file:02}.txt")), vec![b'x'; 64]).expect("file");
+            }
+        }
+        let (files, bytes, _, _) =
+            copy_without_progress(&source, &base.join("target")).expect("copy");
+        assert_eq!(files, 2400, "文件数必须一个不少");
+        assert_eq!(bytes, 2400 * 64);
+        let _ = fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn copying_skips_junctions_instead_of_following_them() {
         let base = scratch("copy");
@@ -893,13 +1022,11 @@ mod tests {
         locations::create_junction(&source.join("data"), &outside).expect("junction");
 
         let target = base.join("target");
-        let mut report = RelocateReport::default();
-        let mut links = Vec::new();
-        copy_without_progress(&source, &target, &mut report, &mut links).expect("copy");
+        let (files, _, links, kept) = copy_without_progress(&source, &target).expect("copy");
 
-        assert_eq!(report.copied_files, 1, "联接里的内容不该被复制");
+        assert_eq!(files, 1, "联接里的内容不该被复制");
         assert!(target.join("atelier-kernel.exe").is_file());
-        assert!(report.kept_links.contains(&"data".to_string()));
+        assert!(kept.contains(&"data".to_string()));
         assert_eq!(links, vec![(PathBuf::from("data"), outside.clone())]);
         let _ = fs::remove_dir_all(&base);
     }
