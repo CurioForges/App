@@ -328,7 +328,11 @@ pub async fn open_workbench(online_port: Option<u16>, stop_foreign: Option<bool>
                         stop_one(*pid).map_err(|e| format!("无法停止 {}：{e}", root.display()))?;
                     }
                 }
-                let settings = crate::settings::load();
+                let mut settings = crate::settings::load();
+                // 迁移或手工删过旧目录之后 data_dir 可能悬空，先自愈再继续。
+                if crate::settings::heal_data_dir(&mut settings, &dir) {
+                    let _ = crate::settings::save(&settings);
+                }
                 let (config, port, reservations) = prepare_binding(&dir)?;
                 // The three user choices are applied here, and only here: `data/` is a
                 // junction inside the root, models are an environment override the

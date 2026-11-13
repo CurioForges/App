@@ -104,6 +104,40 @@ impl Settings {
     }
 }
 
+/// 修掉"数据目录指着已经不在、或者已经空掉的旧安装根"。
+///
+/// 安装根换过位置、或者用户手工删了旧目录之后，`<root>/data` 里明明有数据，
+/// 设置却还指着旧路径 —— `ensure_data_link` 会拒绝启动（"发行包目录里已经有数据"）。
+/// 判据：`<root>/data` 是真实目录且非空，而配置的那个目录不存在、是空的、或者不是目录。
+pub fn heal_data_dir(settings: &mut Settings, root: &Path) -> bool {
+    let Some(configured) = absolute(&settings.installation(crate::catalog::INSTALL_ID).data_dir) else {
+        return false;
+    };
+    let fallback = root.join(crate::contract::DATA);
+    if !fallback.is_dir() || crate::locations::is_link(&fallback) {
+        return false;
+    }
+    let has_entries = |path: &Path| {
+        std::fs::read_dir(path).map(|mut entries| entries.next().is_some()).unwrap_or(false)
+    };
+    if !has_entries(&fallback) {
+        return false;
+    }
+    let same = configured
+        .to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .eq_ignore_ascii_case(fallback.to_string_lossy().trim_end_matches(['\\', '/']));
+    if same {
+        return false;
+    }
+    // 配置的那个目录里确实有东西就尊重它，不替用户改主意。
+    if configured.is_dir() && has_entries(&configured) {
+        return false;
+    }
+    settings.installation_mut(crate::catalog::INSTALL_ID).data_dir = String::new();
+    true
+}
+
 fn absolute(value: &str) -> Option<PathBuf> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -226,6 +260,42 @@ mod tests {
         let root = Path::new(r"C:\AtelierFree");
         assert_eq!(settings.data_path(root, "free"), root.join("data"));
         assert_eq!(settings.models_path(root), root.join("models"));
+    }
+
+    /// 安装根搬走/旧目录被删之后，data_dir 悬空会让启动被拒（"发行包目录里已经有数据"）。
+    #[test]
+    fn a_data_dir_pointing_at_a_deleted_root_falls_back_to_the_new_root() {
+        let base = std::env::temp_dir().join(format!("atelier-heal-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let root = base.join("new");
+        fs::create_dir_all(root.join("data")).expect("data dir");
+        fs::write(root.join("data").join("atelier_kernel.db"), b"x").expect("db");
+
+        let mut settings = Settings::default();
+        let set = |settings: &mut Settings, path: &Path| {
+            settings.installation_mut(crate::catalog::INSTALL_ID).data_dir =
+                path.display().to_string();
+        };
+
+        // 1) 旧路径已经不存在
+        set(&mut settings, &base.join("gone").join("data"));
+        assert!(heal_data_dir(&mut settings, &root), "悬空的旧路径要被清掉");
+        assert_eq!(settings.installation(crate::catalog::INSTALL_ID).data_dir, "");
+
+        // 2) 旧路径还在，但已经被删空了（用户手工清理到一半就是这样）
+        let empty = base.join("emptied");
+        fs::create_dir_all(&empty).expect("empty dir");
+        set(&mut settings, &empty);
+        assert!(heal_data_dir(&mut settings, &root), "空目录同样要退回去");
+        assert_eq!(settings.installation(crate::catalog::INSTALL_ID).data_dir, "");
+
+        // 3) 那个目录里确实有数据：尊重用户的选择
+        let elsewhere = base.join("elsewhere");
+        fs::create_dir_all(&elsewhere).expect("elsewhere");
+        fs::write(elsewhere.join("atelier_kernel.db"), b"y").expect("db");
+        set(&mut settings, &elsewhere);
+        assert!(!heal_data_dir(&mut settings, &root), "有数据的目录不能动");
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

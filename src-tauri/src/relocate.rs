@@ -64,10 +64,18 @@ pub struct RelocateReport {
 
 pub fn view(app: &AppHandle) -> Result<LocationsView, String> {
     let root = variant_runtime::install_dir()?;
-    let settings = app
+    let mut settings = app
         .try_state::<SettingsState>()
         .map(|state| state.snapshot())
         .unwrap_or_else(settings::load);
+    // 每次刷新设置页顺手自愈：数据目录指着不存在的旧根时退回 `<root>/data`，
+    // 否则启动会被 `ensure_data_link` 拒绝（"发行包目录里已经有数据"）。
+    if settings::heal_data_dir(&mut settings, &root) {
+        settings::save(&settings)?;
+        if let Some(state) = app.try_state::<SettingsState>() {
+            *state.0.lock().map_err(|error| error.to_string())? = settings.clone();
+        }
+    }
     let data = settings.data_path(&root, crate::catalog::INSTALL_ID);
     let root_data = root.join(crate::contract::DATA);
     let linked = locations::is_link(&root_data);
@@ -841,16 +849,34 @@ fn remove_tree_with(path: &Path, progress: &mut dyn FnMut(u64)) -> Result<(), St
     }
 }
 
-fn store_install_dir(app: &AppHandle, target: &Path) -> Result<(), String> {
+/// 改安装根，并把**指向旧根的绝对路径**一起改过去。
+///
+/// `data_dir` / `models_dir` 都是用户选过的绝对路径，安装根一换它们就成了悬空指针：
+/// 下次启动时 `<root>/data` 里明明有数据，设置却指着旧目录，`ensure_data_link` 会拒绝启动。
+/// 这就是第一次迁移"漏掉"的东西。
+fn store_install_dir(app: &AppHandle, old_root: &Path, target: &Path) -> Result<(), String> {
     let mut settings = app
         .try_state::<SettingsState>()
         .map(|state| state.snapshot())
         .unwrap_or_else(settings::load);
-    settings.shared.install_dir = target.display().to_string();
+    let old = old_root.display().to_string();
+    let new = target.display().to_string();
+    let mut rewritten = 0u32;
+    if let Some(text) = replace_ignore_ascii_case(&settings.shared.models_dir, &old, &new) {
+        settings.shared.models_dir = text;
+        rewritten += 1;
+    }
+    let data_dir = settings.installation(crate::catalog::INSTALL_ID).data_dir;
+    if let Some(text) = replace_ignore_ascii_case(&data_dir, &old, &new) {
+        settings.installation_mut(crate::catalog::INSTALL_ID).data_dir = text;
+        rewritten += 1;
+    }
+    settings.shared.install_dir = new;
     settings::save(&settings)?;
     if let Some(state) = app.try_state::<SettingsState>() {
         *state.0.lock().map_err(|error| error.to_string())? = settings;
     }
+    crate::installer::trace(format!("install_dir → {}, 重写 {rewritten} 个绝对路径", target.display()));
     Ok(())
 }
 
@@ -974,7 +1000,7 @@ fn move_install(app: &AppHandle, target: &Path) -> Result<RelocateReport, String
         relocate_tree(&root, target, &mut sink)?
     };
 
-    store_install_dir(app, target)?;
+    store_install_dir(app, &root, target)?;
     emit(app, "clean", "正在清理旧位置", root.display().to_string());
     report.removed_old = clean_up_with_progress(app, &root, "正在清理旧位置").is_ok();
     report.message = format!(
@@ -994,22 +1020,45 @@ fn move_install(app: &AppHandle, target: &Path) -> Result<RelocateReport, String
 fn reinstall_install(app: &AppHandle, target: &Path) -> Result<RelocateReport, String> {
     let root = variant_runtime::install_dir()?;
     check_target("安装位置", &root, target)?;
+    // 程序文件重下，但用户数据在旧根里，得先记下它的位置。
+    let before = app
+        .try_state::<SettingsState>()
+        .map(|state| state.snapshot())
+        .unwrap_or_else(settings::load);
+    let old_data = before.data_path(&root, crate::catalog::INSTALL_ID);
     emit(app, "relocate", "正在停止实例", root.display().to_string());
     let _ = variant_runtime::stop_sync();
-    store_install_dir(app, target)?;
+    store_install_dir(app, &root, target)?;
     emit(app, "relocate", "正在新位置重新安装", target.display().to_string());
     let mut report = RelocateReport { target: target.display().to_string(), ..Default::default() };
     if let Err(error) = crate::installer::run_with(app, false) {
         // 装失败就退回原位置：设置已经改过去，不回去会打不开。
-        let _ = store_install_dir(app, &root);
+        let _ = store_install_dir(app, target, &root);
         return Err(format!("新位置安装失败，已退回原位置：{error}"));
+    }
+    // 重新安装只重下程序，用户数据不能跟着旧目录一起删。
+    let mut kept_data = false;
+    if old_data.starts_with(&root) && old_data.is_dir() {
+        let new_data = target.join(crate::contract::DATA);
+        if !new_data.exists() {
+            emit(app, "copy", "正在搬用户数据", old_data.display().to_string());
+            match copy_tree(&old_data, &new_data, &old_data, |_, _| {}) {
+                Ok(_) => kept_data = true,
+                Err(error) => return Err(format!(
+                    "程序已装好，但旧数据没能搬过来（{}）：{error}；旧目录未删除。",
+                    old_data.display())),
+            }
+        } else {
+            kept_data = true;
+        }
     }
     emit(app, "clean", "正在清理旧位置", root.display().to_string());
     report.removed_old = clean_up_with_progress(app, &root, "正在清理旧位置").is_ok();
     report.message = format!(
-        "已在 {} 重新安装{}",
+        "已在 {} 重新安装{}{}",
         target.display(),
-        if report.removed_old { "，旧目录已清空" } else { "，旧目录没删干净" });
+        if report.removed_old { "，旧目录已清空" } else { "，旧目录没删干净" },
+        if kept_data { "；用户数据已保留" } else { "" });
     Ok(report)
 }
 
