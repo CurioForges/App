@@ -726,27 +726,119 @@ fn prefix_of(python: &Path) -> Option<String> {
 }
 
 /// 只删真实文件与目录；遇到联接只删链接本身，绝不顺着它往下删。
+///
+/// 和复制一样按文件并行：几十万个文件单线程逐个 `remove_file` 会让人以为卡死了。
+/// 目录不能并发删（要等子目录空），所以分两段——先并行删文件并收集目录，再自底向上
+/// 逐个 `remove_dir`（每次只是一个系统调用）。
 fn remove_tree(path: &Path) -> Result<(), String> {
+    remove_tree_with(path, &mut |_| {})
+}
+
+fn remove_tree_with(path: &Path, progress: &mut dyn FnMut(u64)) -> Result<(), String> {
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
     if !path.exists() && !locations::is_link(path) {
         return Ok(());
     }
     if locations::is_link(path) {
-        return fs::remove_dir(path).map_err(|error| format!("无法删除联接 {}：{error}", path.display()));
+        fs::remove_dir(path).map_err(|error| format!("无法删除联接 {}：{error}", path.display()))?;
+        progress(1);
+        return Ok(());
     }
-    for entry in fs::read_dir(path)
-        .map_err(|error| format!("无法读取 {}：{error}", path.display()))?
-        .flatten()
-    {
-        let child = entry.path();
-        if locations::is_link(&child) {
-            fs::remove_dir(&child).map_err(|error| format!("无法删除联接 {}：{error}", child.display()))?;
-        } else if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
-            remove_tree(&child)?;
-        } else {
-            fs::remove_file(&child).map_err(|error| format!("无法删除 {}：{error}", child.display()))?;
+
+    let queue: Mutex<Vec<PathBuf>> = Mutex::new(vec![path.to_path_buf()]);
+    let directories: Mutex<Vec<PathBuf>> = Mutex::new(vec![path.to_path_buf()]);
+    let queued = AtomicUsize::new(1);
+    let active = AtomicUsize::new(COPY_THREADS);
+    let deleted = AtomicU64::new(0);
+    let failures: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let stop = AtomicBool::new(false);
+
+    std::thread::scope(|scope| {
+        for _ in 0..COPY_THREADS {
+            scope.spawn(|| loop {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                let next = { lock(&queue).pop() };
+                let Some(current) = next else {
+                    if active.fetch_sub(1, Ordering::AcqRel) == 1 {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    active.fetch_add(1, Ordering::AcqRel);
+                    continue;
+                };
+                queued.fetch_sub(1, Ordering::AcqRel);
+                let entries = match fs::read_dir(&current) {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        lock(&failures).push(format!("无法读取 {}：{error}", current.display()));
+                        continue;
+                    }
+                };
+                let mut pushed = 0usize;
+                for entry in entries.flatten() {
+                    let child = entry.path();
+                    if locations::is_link(&child) {
+                        // 联接只删链接本身；删不掉也不影响其它文件。
+                        if let Err(error) = fs::remove_dir(&child) {
+                            lock(&failures).push(format!("无法删除联接 {}：{error}", child.display()));
+                        }
+                        continue;
+                    }
+                    let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+                    if is_dir {
+                        lock(&queue).push(child.clone());
+                        lock(&directories).push(child);
+                        pushed += 1;
+                        continue;
+                    }
+                    match fs::remove_file(&child) {
+                        Ok(()) => {
+                            deleted.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(error) => {
+                            lock(&failures).push(format!("无法删除 {}：{error}", child.display()));
+                        }
+                    }
+                }
+                if pushed > 0 {
+                    queued.fetch_add(pushed, Ordering::AcqRel);
+                }
+            });
+        }
+        // 主线程：报进度，等所有 worker 收工。
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            progress(deleted.load(Ordering::Relaxed));
+            if active.load(Ordering::Acquire) == 0 && queued.load(Ordering::Acquire) == 0 {
+                break;
+            }
+        }
+    });
+
+    // 自底向上删目录：长的路径一定比短的深。
+    let mut dirs = lock(&directories).drain(..).collect::<Vec<_>>();
+    dirs.sort_by_key(|dir| std::cmp::Reverse(dir.as_os_str().len()));
+    for dir in dirs {
+        if let Err(error) = fs::remove_dir(&dir) {
+            lock(&failures).push(format!("无法删除 {}：{error}", dir.display()));
         }
     }
-    fs::remove_dir(path).map_err(|error| format!("无法删除 {}：{error}", path.display()))
+
+    let failures = lock(&failures).drain(..).collect::<Vec<_>>();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        // 只报前几条：真正的失败通常是同一个原因（文件被占用）。
+        let mut message = failures.iter().take(3).cloned().collect::<Vec<_>>().join("；");
+        if failures.len() > 3 {
+            message.push_str(&format!("；另有 {} 处失败", failures.len() - 3));
+        }
+        Err(message)
+    }
 }
 
 fn store_install_dir(app: &AppHandle, target: &Path) -> Result<(), String> {
@@ -760,6 +852,17 @@ fn store_install_dir(app: &AppHandle, target: &Path) -> Result<(), String> {
         *state.0.lock().map_err(|error| error.to_string())? = settings;
     }
     Ok(())
+}
+
+/// 删目录时的进度回调：每 200 毫秒说一次删了多少文件，别让界面停在"正在清理"。
+fn clean_up_with_progress(app: &AppHandle, path: &Path, label: &str) -> Result<(), String> {
+    let mut last = std::time::Instant::now();
+    remove_tree_with(path, &mut |files| {
+        if last.elapsed().as_secs_f64() >= 0.25 {
+            last = std::time::Instant::now();
+            emit(app, "clean", label, format!("已删除 {files} 个文件"));
+        }
+    })
 }
 
 /// 一次真正的搬家：复制 → 补联接 → 重写环境路径 → 自检 → 确认新位置能跑。
@@ -872,8 +975,8 @@ fn move_install(app: &AppHandle, target: &Path) -> Result<RelocateReport, String
     };
 
     store_install_dir(app, target)?;
-    emit(app, "relocate", "正在清理旧位置", root.display().to_string());
-    report.removed_old = remove_tree(&root).is_ok();
+    emit(app, "clean", "正在清理旧位置", root.display().to_string());
+    report.removed_old = clean_up_with_progress(app, &root, "正在清理旧位置").is_ok();
     report.message = format!(
         "已迁移到 {}：{} 个文件 / {:.1} GB{}{}",
         target.display(),
@@ -901,7 +1004,8 @@ fn reinstall_install(app: &AppHandle, target: &Path) -> Result<RelocateReport, S
         let _ = store_install_dir(app, &root);
         return Err(format!("新位置安装失败，已退回原位置：{error}"));
     }
-    report.removed_old = remove_tree(&root).is_ok();
+    emit(app, "clean", "正在清理旧位置", root.display().to_string());
+    report.removed_old = clean_up_with_progress(app, &root, "正在清理旧位置").is_ok();
     report.message = format!(
         "已在 {} 重新安装{}",
         target.display(),
@@ -977,7 +1081,8 @@ fn move_data(app: &AppHandle, target: &Path) -> Result<RelocateReport, String> {
     if let Some(state) = app.try_state::<SettingsState>() {
         *state.0.lock().map_err(|error| error.to_string())? = settings;
     }
-    let cleaned = remove_tree(&backup).is_ok() && !backup.exists();
+    emit(app, "clean", "正在清理旧数据", backup.display().to_string());
+    let cleaned = clean_up_with_progress(app, &backup, "正在清理旧数据").is_ok() && !backup.exists();
     report.removed_old = cleaned;
     report.message = format!(
         "数据已迁到 {}：{} 个文件 / {:.1} GB{}",
@@ -1097,7 +1202,12 @@ fn move_models(app: &AppHandle, target: &Path) -> Result<RelocateReport, String>
     save_models_dir(app, target)?;
     // 权重目录常常在安装根之外（甚至是别的仓库的 checkpoints），那种旧目录不替用户删。
     let ours = current.starts_with(&root);
-    report.removed_old = if ours { remove_tree(&current).is_ok() } else { false };
+    report.removed_old = if ours {
+        emit(app, "clean", "正在清理旧权重", current.display().to_string());
+        clean_up_with_progress(app, &current, "正在清理旧权重").is_ok()
+    } else {
+        false
+    };
     report.message = format!(
         "权重已迁到 {}：{} 个文件 / {:.1} GB{}",
         target.display(),
@@ -1323,6 +1433,26 @@ mod tests {
         let error = relocate_tree(&root, &target, &mut |_| {}).expect_err("must fail");
         assert!(error.contains("atelier-kernel.exe"), "{error}");
         assert!(!target.exists(), "失败时不该留下半个新目录");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 并行删：嵌套目录、600 个文件，删完必须一个不剩，且进度回调报过数。
+    #[test]
+    fn parallel_delete_removes_nested_trees() {
+        let base = scratch("delete");
+        let root = base.join("old");
+        for index in 0..20 {
+            let dir = root.join(format!("d{index:02}")).join("inner");
+            fs::create_dir_all(&dir).expect("dir");
+            for file in 0..30 {
+                fs::write(dir.join(format!("f{file:02}.txt")), b"x").expect("file");
+            }
+        }
+        let mut seen = 0u64;
+        remove_tree_with(&root, &mut |files| seen = seen.max(files)).expect("remove");
+        assert!(!root.exists(), "整棵树必须删干净");
+        assert!(base.is_dir(), "父目录不能被误删");
+        assert!(seen <= 600, "进度回调不会多报");
         let _ = fs::remove_dir_all(&base);
     }
 

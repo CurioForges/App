@@ -295,23 +295,26 @@ function UpdateOverlay({progress, log}) {
   /** 选完新位置先问一句：搬家还是只切路径。搬得多、重下得少，代价写清楚让人自己选。 */
   async function chooseLocation(kind) {
     try {
-      const current = kind === 'install' ? locations?.install : locations?.data;
+      const current = kind === 'install' ? locations?.install
+        : kind === 'models' ? locations?.models : locations?.data;
       const picked = await invoke('choose_directory', {kind, current: current || null});
       if (!picked) return;
       if (picked.toLowerCase() === String(current || '').toLowerCase()) return;
       setMoveError('');
-      setMoveChoice({kind, target: picked});
+      // 起点在选目录时就固定下来：刷新之后 install 会变成新位置，弹窗里会显示"从 A 到 A"。
+      setMoveChoice({kind, target: picked, from: current || ''});
     } catch (err) { setError(String(err)); }
   }
 
   /** 权重目录：可以搬过去，也可以只切指针（新位置已经有同一套权重时）。 */
   async function chooseModels() {
     try {
-      const picked = await invoke('choose_directory', {kind:'models', current: shared?.modelsDir || locations?.models || null});
+      const current = shared?.modelsDir || locations?.models || '';
+      const picked = await invoke('choose_directory', {kind:'models', current: current || null});
       if (!picked) return;
-      if (picked.toLowerCase() === String(shared?.modelsDir || '').toLowerCase()) return;
+      if (picked.toLowerCase() === String(current).toLowerCase()) return;
       setMoveError('');
-      setMoveChoice({kind:'models', target: picked});
+      setMoveChoice({kind:'models', target: picked, from: current});
     } catch (err) { setError(String(err)); }
   }
 
@@ -522,10 +525,7 @@ function UpdateOverlay({progress, log}) {
       </>}>
       <div className="relocate-body">
         <div className="relocate-paths">
-          <span>从</span><code title={moveChoice?.kind === 'models' ? locations?.models : locations?.install}>
-            {moveChoice?.kind === 'models'
-              ? (locations?.models || '当前权重目录')
-              : (locations?.install || '当前安装位置')}</code>
+          <span>从</span><code title={moveChoice?.from}>{moveChoice?.from || '当前位置'}</code>
           <span>到</span><code title={moveChoice?.target}>{moveChoice?.target}</code>
         </div>
         {moveError ? <p className="error-text" role="alert">{moveError}</p> : null}
@@ -549,7 +549,9 @@ function UpdateOverlay({progress, log}) {
               <span>{pct == null ? (moving_?.label || '准备中…') : `${Math.round(pct)}%`}</span>
               {moving_?.total
                 ? <span>{`${gb(moving_.done)} / ${gb(moving_.total)} GB`}</span>
-                : moving_ ? <span>{`已搬 ${gb(moving_.done)} GB`}</span> : null}
+                : typeof moving_?.done === 'number'
+                  ? <span>{`已搬 ${gb(moving_.done)} GB`}</span>
+                  : null}
               {typeof moving_?.rate === 'number'
                 ? <span>{`${(moving_.rate / 1048576).toFixed(1)} MB/s`}</span>
                 : null}
