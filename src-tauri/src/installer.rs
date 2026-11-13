@@ -176,7 +176,7 @@ struct Item {
 /// `https://github.com/{repo}/releases/download/{tag}/{asset}`。
 ///
 /// 这里不再依赖 GitHub CLI：普通用户机器上根本不会装 `gh`，以前第一次点安装就卡在
-/// 「无法执行 gh」。整条链路只用 HTTPS，唯一的外部程序是系统自带的 `certutil`（算 sha256）。
+/// 「无法执行 gh」。整条链路只用 HTTPS，外部程序只剩解压用的系统自带 `tar`（隐藏启动）。
 const COMPOSITION_REPO: &str = "NomadAnget/AtelierFree";
 /// Where the kernel runtime and the Python SDK come from.
 const KERNEL_REPO: &str = "NomadAnget/Atelier-Kernel";
@@ -348,19 +348,23 @@ fn cache_dir(train: &str) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn sha256_of(path: &Path) -> Result<String, String> {
-    let output = hidden("certutil")
-        .args(["-hashfile", &path.to_string_lossy(), "SHA256"])
-        .output()
-        .map_err(|e| format!("无法调用 certutil：{e}"))?;
-    if !output.status.success() { return Err(format!("certutil 失败：{}", path.display())) }
-    let text = String::from_utf8_lossy(&output.stdout);
-    for line in text.lines() {
-        let candidate = line.trim().replace(' ', "");
-        if candidate.len() == 64 && candidate.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Ok(candidate.to_ascii_lowercase());
-        }
+    // 以前调 `certutil -hashfile`：控制台程序，每校验一个组件闪一次窗口。走 CNG 原生接口。
+    #[cfg(windows)]
+    {
+        return crate::win::sha256_file(path);
     }
-    Err(format!("certutil 输出里没有 sha256：{}", path.display()))
+    #[cfg(not(windows))]
+    {
+        let output = hidden("sha256sum")
+            .arg(path)
+            .output()
+            .map_err(|e| format!("无法计算 sha256：{e}"))?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.split_whitespace().next()
+            .map(|value| value.to_ascii_lowercase())
+            .filter(|value| value.len() == 64)
+            .ok_or_else(|| format!("sha256 输出异常：{}", path.display()))
+    }
 }
 
 /// `gh` 的失败信息里带一整条带签名的下载 URL,对用户毫无意义,也长到把界面撑爆。
@@ -892,18 +896,17 @@ fn poll_environment(app: &AppHandle, port: u16) -> EnvView {
     view
 }
 
-/// 目标盘剩余空间。走一次 PowerShell,避免为一次查询引 sysinfo 的 disk feature。
+/// 目标盘剩余空间。原生 API 一次调用：以前起 PowerShell 查一次，窗口会闪。
 fn free_bytes(dir: &Path) -> Option<u64> {
-    let letter = dir.components().next()
-        .and_then(|c| match c {
-            std::path::Component::Prefix(p) => Some(p.as_os_str().to_string_lossy().trim_end_matches('\\').to_string()),
-            _ => None,
-        })?;
-    let script = format!("(Get-PSDrive -Name '{}').Free", letter.replace(':', ""));
-    let out = hidden("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output().ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok()
+    #[cfg(windows)]
+    {
+        return crate::win::free_bytes(dir);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = dir;
+        None
+    }
 }
 /// The whole flow: download → verify → stage → swap, with rollback through a journal.
 pub fn run(app: &AppHandle) -> Result<String, String> { run_with(app, true) }

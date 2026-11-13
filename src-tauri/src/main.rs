@@ -14,6 +14,8 @@ mod settings;
 mod setup;
 mod storage;
 mod variant_runtime;
+#[cfg(windows)]
+mod win;
 
 use std::fs;
 use tauri::{

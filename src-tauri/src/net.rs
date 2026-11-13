@@ -52,50 +52,20 @@ fn system_proxy() -> Option<String> {
     }
 }
 
-/// 读 `HKCU\...\Internet Settings`。`reg.exe` 是系统自带，不引入新依赖。
+/// 读 `HKCU\...\Internet Settings`。走原生注册表 API：`reg.exe` 是控制台程序，
+/// 每次建客户端都拉一个进程，更新一次发行版能闪十几次黑框。
 #[cfg(windows)]
 fn windows_proxy() -> Option<String> {
-    use std::process::Command;
-    let output = Command::new("reg")
-        .args([
-            "query",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
+    if crate::win::internet_setting_dword("ProxyEnable")? == 0 {
         return None;
     }
-    parse_registry(&String::from_utf8_lossy(&output.stdout))
+    let raw = crate::win::internet_setting_string("ProxyServer")?;
+    pick_server(&raw)
 }
 
-/// 解析 `reg query` 的输出。中文 Windows 的 `REG_SZ` 值可能带本地编码，
-/// 但代理地址本身是 ASCII，所以按行切就够了。
+/// 从 `ProxyServer` 的值里挑一个：`http=host:port;https=host:port` 或直接 `host:port`。
 #[cfg(windows)]
-fn parse_registry(text: &str) -> Option<String> {
-    let mut enabled = false;
-    let mut server: Option<String> = None;
-    for line in text.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        match parts[0] {
-            "ProxyEnable" => enabled = parts[2].trim_start_matches("0x").trim() != "0",
-            "ProxyServer" => {
-                let value = parts[2..].join("");
-                if !value.is_empty() {
-                    server = Some(value);
-                }
-            }
-            _ => {}
-        }
-    }
-    if !enabled {
-        return None;
-    }
-    let raw = server?;
-    // `http=host:port;https=host:port` 或直接 `host:port`
+fn pick_server(raw: &str) -> Option<String> {
     let mut found: Option<String> = None;
     for entry in raw.split(';') {
         let (scheme, address) = match entry.split_once('=') {
@@ -129,18 +99,25 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn registry_proxy_is_read_only_when_enabled() {
-        let enabled = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\r\n    ProxyEnable    REG_DWORD    0x1\r\n    ProxyServer    REG_SZ    127.0.0.1:7890\r\n";
-        assert_eq!(parse_registry(enabled).as_deref(), Some("http://127.0.0.1:7890"));
+    fn proxy_value_prefers_https_and_tolerates_bare_hosts() {
+        // `ProxyServer` 的真实取值：单地址、按协议列表、带协议前缀。
+        assert_eq!(pick_server("127.0.0.1:7890").as_deref(), Some("http://127.0.0.1:7890"));
+        assert_eq!(pick_server("http=10.0.0.2:8080;https=10.0.0.2:8443").as_deref(),
+                   Some("http://10.0.0.2:8443"));
+        assert_eq!(pick_server("https://proxy.corp:443").as_deref(),
+                   Some("https://proxy.corp:443"));
+        assert_eq!(pick_server("socks=10.0.0.2:1080"), Some("http://10.0.0.2:1080".to_string()));
+        assert_eq!(pick_server(""), None);
+    }
 
-        let disabled = "    ProxyEnable    REG_DWORD    0x0\r\n    ProxyServer    REG_SZ    127.0.0.1:7890\r\n";
-        assert_eq!(parse_registry(disabled), None);
-
-        let per_scheme = "    ProxyEnable    REG_DWORD    0x1\r\n    ProxyServer    REG_SZ    http=10.0.0.2:8080;https=10.0.0.2:8443\r\n";
-        assert_eq!(parse_registry(per_scheme).as_deref(), Some("http://10.0.0.2:8443"));
-
-        let bare_https = "    ProxyEnable    REG_DWORD    0x1\r\n    ProxyServer    REG_SZ    https://proxy.corp:443\r\n";
-        assert_eq!(parse_registry(bare_https).as_deref(), Some("https://proxy.corp:443"));
+    #[cfg(windows)]
+    #[test]
+    fn disabled_proxy_means_direct_connection() {
+        // 机器上没开代理时 registry 里就是 0（或根本没有这个值）。
+        let enabled = crate::win::internet_setting_dword("ProxyEnable");
+        if enabled == Some(0) {
+            assert_eq!(system_proxy(), None);
+        }
     }
 
     #[test]

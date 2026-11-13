@@ -8,6 +8,8 @@ use std::{
     path::PathBuf,
     time::Duration,
 };
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -304,6 +306,8 @@ pub fn open_url(url: String) -> Result<(), String> {
     }
     std::process::Command::new("cmd.exe")
         .args(["/c", "start", "", trimmed])
+        // 不加这个标志，点一次「获取令牌」就闪一个黑框。
+        .creation_flags(0x0800_0000)
         .spawn()
         .map_err(|e| format!("无法打开浏览器：{e}"))?;
     Ok(())
