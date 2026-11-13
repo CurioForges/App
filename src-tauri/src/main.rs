@@ -228,6 +228,7 @@ fn main() {
             relocate::locations_view,
             relocate::relocate_install,
             relocate::relocate_data,
+            relocate::relocate_models,
             setup::inspect_directory,
             setup::test_token,
             setup::complete_setup,

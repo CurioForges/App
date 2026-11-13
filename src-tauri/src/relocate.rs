@@ -325,8 +325,16 @@ const COPY_THREADS: usize = 16;
 struct CopyOutcome {
     files: u64,
     bytes: u64,
-    links: Vec<(PathBuf, PathBuf)>,
+    links: Vec<LinkRecord>,
     kept_links: Vec<String>,
+}
+
+/// 树里的一个联接。`dir` 决定搬到新位置后怎么补：目录用联接，文件用硬链接。
+#[derive(Debug, Clone, PartialEq)]
+struct LinkRecord {
+    relative: PathBuf,
+    target: PathBuf,
+    dir: bool,
 }
 
 /// 并行复制共享状态：16 个线程分摊目录，主线程每 200 毫秒报一次进度。
@@ -338,7 +346,7 @@ struct CopyState {
     bytes: std::sync::atomic::AtomicU64,
     stop: std::sync::atomic::AtomicBool,
     failure: std::sync::Mutex<Option<String>>,
-    links: std::sync::Mutex<Vec<(PathBuf, PathBuf)>>,
+    links: std::sync::Mutex<Vec<LinkRecord>>,
     kept: std::sync::Mutex<Vec<String>>,
 }
 
@@ -401,10 +409,12 @@ fn copy_directory(state: &CopyState, base: &Path, current: &Path, target_dir: &P
         let target = target_dir.join(entry.file_name());
         let file_type = entry.file_type().map_err(|error| format!("无法读取 {}：{error}", path.display()))?;
         if file_type.is_symlink() || locations::is_link(&path) {
-            lock(&state.links).push((
-                path.strip_prefix(base).unwrap_or(&path).to_path_buf(),
-                fs::read_link(&path).unwrap_or_default(),
-            ));
+            lock(&state.links).push(LinkRecord {
+                relative: path.strip_prefix(base).unwrap_or(&path).to_path_buf(),
+                target: fs::read_link(&path).unwrap_or_default(),
+                dir: entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
+                    || fs::metadata(&path).map(|meta| meta.is_dir()).unwrap_or(false),
+            });
             lock(&state.kept).push(entry.file_name().to_string_lossy().to_string());
             continue;
         }
@@ -454,7 +464,7 @@ fn copy_tree(
     if let Some(error) = lock(&state.failure).take() {
         return Err(error);
     }
-    let links: Vec<(PathBuf, PathBuf)> = lock(&state.links).drain(..).collect();
+    let links: Vec<LinkRecord> = lock(&state.links).drain(..).collect();
     let kept_links: Vec<String> = lock(&state.kept).drain(..).collect();
     Ok(CopyOutcome {
         files: state.files.load(Ordering::Relaxed),
@@ -464,18 +474,44 @@ fn copy_tree(
     })
 }
 
-fn recreate_links(new_root: &Path, old_root: &Path, links: &[(PathBuf, PathBuf)]) -> Result<(), String> {
-    for (relative, target) in links {
+/// 把树里跳过的联接在新位置补回来。
+///
+/// 目录联接（`data/`、HF 的 shared-blobs）用 `mklink /J`，不需要管理员。
+/// **文件**符号链接（HF 缓存的 `snapshots/<rev>/xxx` 指向 `../../blobs/<sha>`）不能建联接，
+/// 而创建真符号链接需要管理员权限，所以改用硬链接：同一个新目录里，不占额外空间、
+/// 也不需要提权；硬链接失败（跨卷等）再退化成复制内容。
+fn recreate_links(new_root: &Path, old_root: &Path, links: &[LinkRecord]) -> Result<(), String> {
+    for record in links {
         // 指向旧根内部就跟着搬；指向外面（另一块盘的数据目录）保持原样。
-        let target = match target.strip_prefix(old_root) {
+        let mapped = match record.target.strip_prefix(old_root) {
             Ok(rest) => new_root.join(rest),
-            Err(_) => target.clone(),
+            Err(_) => record.target.clone(),
         };
-        let link = new_root.join(relative);
-        if locations::is_link(&link) {
+        // 相对链接（HF 缓存就是这样写的）按新位置的父目录解析。
+        let source = if record.target.is_absolute() {
+            mapped
+        } else {
+            let parent = new_root.join(&record.relative);
+            let parent = parent.parent().unwrap_or(new_root);
+            parent.join(&record.target)
+        };
+        let link = new_root.join(&record.relative);
+        if locations::is_link(&link) || link.exists() {
             continue;
         }
-        locations::create_junction(&link, &target)?;
+        if record.dir {
+            locations::create_junction(&link, &source)?;
+            continue;
+        }
+        if let Some(parent) = link.parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("无法创建 {}：{error}", parent.display()))?;
+        }
+        if fs::hard_link(&source, &link).is_err() {
+            // 跨卷或者文件系统不支持硬链接：只能把内容复制一份，至少数据是全的。
+            fs::copy(&source, &link).map_err(|error| {
+                format!("无法补回 {}（指向 {}）：{error}", link.display(), source.display())
+            })?;
+        }
     }
     Ok(())
 }
@@ -952,6 +988,129 @@ fn move_data(app: &AppHandle, target: &Path) -> Result<RelocateReport, String> {
     Ok(report)
 }
 
+/// 换权重目录。`mode`：`move` 把现有权重搬过去，`switch` 只改设置（新目录里已经有权重时用）。
+///
+/// 权重和安装目录的区别只有一处：HF 缓存里 `snapshots/<rev>/xxx` 是指向 `blobs/` 的
+/// 文件符号链接，搬完要按硬链接补回来（见 `recreate_links`）。其余流程完全复用。
+#[tauri::command]
+pub async fn relocate_models(
+    app: AppHandle,
+    target: String,
+    mode: String,
+) -> Result<RelocateReport, String> {
+    let app_for_task = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        match mode.as_str() {
+            "move" => move_models(&app_for_task, Path::new(target.trim())),
+            "switch" => switch_models(&app_for_task, Path::new(target.trim())),
+            other => Err(format!("未知的迁移方式：{other}")),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    match &result {
+        Ok(report) => finish_done(&app, &report.message),
+        Err(error) => finish_failed(&app, error),
+    }
+    result
+}
+
+fn save_models_dir(app: &AppHandle, target: &Path) -> Result<(), String> {
+    let mut settings = app
+        .try_state::<SettingsState>()
+        .map(|state| state.snapshot())
+        .unwrap_or_else(settings::load);
+    settings.shared.models_dir = target.display().to_string();
+    settings::save(&settings)?;
+    if let Some(state) = app.try_state::<SettingsState>() {
+        *state.0.lock().map_err(|error| error.to_string())? = settings;
+    }
+    Ok(())
+}
+
+fn switch_models(app: &AppHandle, target: &Path) -> Result<RelocateReport, String> {
+    if !target.is_absolute() {
+        return Err("权重目录必须是绝对路径。".into());
+    }
+    let check = locations::inspect("models", target);
+    if let Some(blocker) = check.blockers.first() {
+        return Err(format!("权重目录不可用：{blocker}"));
+    }
+    fs::create_dir_all(target).map_err(|error| format!("无法创建权重目录：{error}"))?;
+    save_models_dir(app, target)?;
+    Ok(RelocateReport {
+        target: target.display().to_string(),
+        message: format!("已把权重目录切到 {}（没有搬动文件）", target.display()),
+        ..Default::default()
+    })
+}
+
+fn move_models(app: &AppHandle, target: &Path) -> Result<RelocateReport, String> {
+    let root = variant_runtime::install_dir()?;
+    let settings_now = app
+        .try_state::<SettingsState>()
+        .map(|state| state.snapshot())
+        .unwrap_or_else(settings::load);
+    let current = settings_now.models_path(&root);
+    check_target("权重目录", &current, target)?;
+
+    let mut report = RelocateReport { target: target.display().to_string(), ..Default::default() };
+    if !current.is_dir() {
+        save_models_dir(app, target)?;
+        report.message = format!(
+            "{} 里还没有权重，已直接把权重目录设成 {}",
+            current.display(), target.display());
+        return Ok(report);
+    }
+
+    emit(app, "relocate", "正在停止实例", root.display().to_string());
+    let _ = variant_runtime::stop_sync();
+    emit(app, "copy", "正在统计要搬多少", current.display().to_string());
+    let (share, measure) = start_measure(&current);
+    let mut last_tick = std::time::Instant::now();
+    let mut meter = RateMeter::new();
+    let copied = copy_tree(&current, target, &current, |files, bytes| {
+        let now = std::time::Instant::now();
+        if now.duration_since(last_tick).as_secs_f64() < 0.25 {
+            return;
+        }
+        last_tick = now;
+        emit_copy(app, share.tick(bytes, files, meter.rate(bytes)));
+    });
+    let _ = measure.join();
+    let outcome = copied.map_err(|error| {
+        let _ = remove_tree(target);
+        format!("迁移中断，权重没有改动：{error}")
+    })?;
+    report.copied_files = outcome.files;
+    report.copied_bytes = outcome.bytes;
+    report.kept_links = outcome.kept_links;
+    emit_copy(app, CopyTick {
+        bytes: report.copied_bytes,
+        files: report.copied_files,
+        total_bytes: share.total_bytes(),
+        scanned_files: report.copied_files,
+        rate: 0,
+    });
+    recreate_links(target, &current, &outcome.links)?;
+
+    save_models_dir(app, target)?;
+    // 权重目录常常在安装根之外（甚至是别的仓库的 checkpoints），那种旧目录不替用户删。
+    let ours = current.starts_with(&root);
+    report.removed_old = if ours { remove_tree(&current).is_ok() } else { false };
+    report.message = format!(
+        "权重已迁到 {}：{} 个文件 / {:.1} GB{}",
+        target.display(),
+        report.copied_files,
+        report.copied_bytes as f64 / 1e9,
+        if report.removed_old {
+            "，旧目录已清空".to_string()
+        } else {
+            format!("；旧目录 {} 在安装根之外，没有替你删除", current.display())
+        });
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -966,7 +1125,7 @@ mod tests {
     fn copy_without_progress(
         src: &Path,
         dst: &Path,
-    ) -> Result<(u64, u64, Vec<(PathBuf, PathBuf)>, Vec<String>), String> {
+    ) -> Result<(u64, u64, Vec<LinkRecord>, Vec<String>), String> {
         let outcome = copy_tree(src, dst, src, |_, _| {})?;
         Ok((outcome.files, outcome.bytes, outcome.links, outcome.kept_links))
     }
@@ -1023,6 +1182,29 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// HF 缓存的快照是指向 `../blobs/<sha>` 的文件符号链接。管理员权限才能建真符号链接，
+    /// 所以搬迁后用硬链接补：内容共享、不额外占空间。
+    #[test]
+    fn file_links_are_recreated_as_hard_links() {
+        let base = scratch("file-links");
+        let root = base.join("new");
+        let blob = root.join("blobs").join("abc123");
+        fs::create_dir_all(blob.parent().expect("blobs dir")).expect("blobs");
+        fs::write(&blob, b"weights").expect("blob");
+        let links = vec![LinkRecord {
+            relative: PathBuf::from("snapshots").join("rev").join("config.json"),
+            target: PathBuf::from("..").join("..").join("blobs").join("abc123"),
+            dir: false,
+        }];
+        recreate_links(&root, &root, &links).expect("recreate");
+        let link = root.join("snapshots").join("rev").join("config.json");
+        assert_eq!(fs::read(&link).expect("read"), b"weights");
+        // 硬链接的两条路径是同一份数据：改一个，另一个也变。
+        fs::write(&link, b"changed").expect("write through link");
+        assert_eq!(fs::read(&blob).expect("read blob"), b"changed", "应该是硬链接而不是复制");
+        let _ = fs::remove_dir_all(&base);
+    }
+
     /// 16 线程分摊目录：数量对不上就是队列计数错了（少搬或多搬都会在这里露出来）。
     #[test]
     fn parallel_copy_copies_every_file() {
@@ -1059,7 +1241,9 @@ mod tests {
         assert_eq!(files, 1, "联接里的内容不该被复制");
         assert!(target.join("atelier-kernel.exe").is_file());
         assert!(kept.contains(&"data".to_string()));
-        assert_eq!(links, vec![(PathBuf::from("data"), outside.clone())]);
+        assert_eq!(
+            links,
+            vec![LinkRecord { relative: PathBuf::from("data"), target: outside.clone(), dir: true }]);
         let _ = fs::remove_dir_all(&base);
     }
 

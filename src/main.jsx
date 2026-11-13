@@ -292,14 +292,7 @@ function UpdateOverlay({progress, log}) {
   const installed = cap?.installed ?? false;
   const running = !!(cap?.port && cap.domains.some(domain => domain.running));
 
-  async function chooseModels() {
-    try {
-      const picked = await invoke('choose_directory', {kind:'models', current: shared?.modelsDir || null});
-      if (picked) setShared(current => ({...current, modelsDir: picked}));
-    } catch (err) { setError(String(err)); }
-  }
-
-  /** 选完新位置先问一句：搬家还是重装。搬得多、重下得少，代价写清楚让人自己选。 */
+  /** 选完新位置先问一句：搬家还是只切路径。搬得多、重下得少，代价写清楚让人自己选。 */
   async function chooseLocation(kind) {
     try {
       const current = kind === 'install' ? locations?.install : locations?.data;
@@ -311,13 +304,26 @@ function UpdateOverlay({progress, log}) {
     } catch (err) { setError(String(err)); }
   }
 
+  /** 权重目录：可以搬过去，也可以只切指针（新位置已经有同一套权重时）。 */
+  async function chooseModels() {
+    try {
+      const picked = await invoke('choose_directory', {kind:'models', current: shared?.modelsDir || locations?.models || null});
+      if (!picked) return;
+      if (picked.toLowerCase() === String(shared?.modelsDir || '').toLowerCase()) return;
+      setMoveError('');
+      setMoveChoice({kind:'models', target: picked});
+    } catch (err) { setError(String(err)); }
+  }
+
   async function runRelocate(mode) {
     if (!moveChoice) return;
     setMoving(true); setMessage(''); setError(''); setMoveError('');
     try {
       const report = moveChoice.kind === 'install'
         ? await invoke('relocate_install', {target: moveChoice.target, mode})
-        : await invoke('relocate_data', {target: moveChoice.target});
+        : moveChoice.kind === 'models'
+          ? await invoke('relocate_models', {target: moveChoice.target, mode})
+          : await invoke('relocate_data', {target: moveChoice.target});
       setMoveChoice(null);
       setMessage(report?.message || '已迁移完成。');
       await refresh();
@@ -462,7 +468,7 @@ function UpdateOverlay({progress, log}) {
             <div className="setting-bar">
               <span className="setting-label">权重目录</span>
               <div className="setting-path">{shared?.modelsDir || shared?.modelsDirEffective || '安装目录默认位置'}</div>
-              <Button size="small" onClick={chooseModels} disabled={savingShared}>选择目录</Button>
+              <Button size="small" onClick={chooseModels} disabled={moving}>更改</Button>
             </div>
             <div className="setting-bar">
               <span className="setting-label">LLM 服务</span>
@@ -498,19 +504,28 @@ function UpdateOverlay({progress, log}) {
     <Modal
       open={!!moveChoice}
       onClose={()=>{ if (!moving) setMoveChoice(null); }}
-      title={moveChoice?.kind === 'install' ? '换安装位置' : '换数据目录'}
+      title={moveChoice?.kind === 'install' ? '换安装位置'
+        : moveChoice?.kind === 'models' ? '换权重目录' : '换数据目录'}
       footer={<>
         <Button onClick={()=>setMoveChoice(null)} disabled={moving}>取消</Button>
         {moveChoice?.kind === 'install' && <Button onClick={()=>runRelocate('reinstall')} disabled={moving}>
           {moving ? '处理中…' : '在新位置重新安装'}
         </Button>}
+        {moveChoice?.kind === 'models' && <Button onClick={()=>runRelocate('switch')} disabled={moving}>
+          {moving ? '处理中…' : '只切换路径'}
+        </Button>}
         <Button variant="primary" onClick={()=>runRelocate('move')} disabled={moving}>
-          {moving ? '处理中…' : moveChoice?.kind === 'install' ? '迁移到新位置' : '迁移数据'}
+          {moving ? '处理中…'
+            : moveChoice?.kind === 'install' ? '迁移到新位置'
+            : moveChoice?.kind === 'models' ? '迁移权重' : '迁移数据'}
         </Button>
       </>}>
       <div className="relocate-body">
         <div className="relocate-paths">
-          <span>从</span><code title={locations?.install}>{locations?.install || '当前安装位置'}</code>
+          <span>从</span><code title={moveChoice?.kind === 'models' ? locations?.models : locations?.install}>
+            {moveChoice?.kind === 'models'
+              ? (locations?.models || '当前权重目录')
+              : (locations?.install || '当前安装位置')}</code>
           <span>到</span><code title={moveChoice?.target}>{moveChoice?.target}</code>
         </div>
         {moveError ? <p className="error-text" role="alert">{moveError}</p> : null}
@@ -548,6 +563,12 @@ function UpdateOverlay({progress, log}) {
             自检不过的下次用到时重建）。新位置验证通过后才清空旧目录。</p>
           <p><b>重新安装</b>：在新位置按清单重新下载装配，不搬任何文件；完成后清空旧目录。</p>
           <p className="risk">两种方式都会先停止正在运行的实例，未完成的任务需要重新跑。</p>
+        </> : moveChoice?.kind === 'models' ? <>
+          <p><b>迁移权重</b>：把整个权重目录搬过去（`hf_cache` 里的 blobs/snapshots 结构照样保留，
+            搬完用硬链接补回快照指针，不额外占空间）。新位置放得下再开始，通常几十到上百 GB。</p>
+          <p><b>只切换路径</b>：新位置已经有一套权重（比如另一台安装留下的）时用这个，
+            只改设置，不搬也不删。</p>
+          <p className="risk">迁移会先停止正在运行的实例；旧目录如果在安装根之外，不会替你删。</p>
         </> : <>
           <p>把现有数据（任务记录、管线产物、数据库）搬到新位置，然后把
             <code>{locations?.install}\data</code> 指过去；旧目录迁移成功后清空。</p>
