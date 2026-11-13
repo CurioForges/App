@@ -55,6 +55,9 @@ pub struct RelocateReport {
     pub rewritten_venvs: u64,
     /// 自检不过、已从账本移除的环境：下次用到时会重建。
     pub rebuild: Vec<String>,
+    /// 控制台脚本（`Scripts/*.exe`）里仍编着旧路径的环境。引擎只用 `python -m` 调用，
+    /// 所以只提示、不重建 —— 真的重建一次就是几十 GB 下载。
+    pub shim_warnings: Vec<String>,
     pub removed_old: bool,
     pub message: String,
 }
@@ -359,10 +362,14 @@ fn replace_ignore_ascii_case(text: &str, needle: &str, replacement: &str) -> Opt
     Some(out)
 }
 
-/// 自检每个已构建环境：改过 `pyvenv.cfg` 之后 python 还能不能认出自己、控制台脚本里
-/// 还有没有残留的旧路径。不过关的从账本里删掉 —— 下次用到时按锁文件重建。
-fn verify_environments(roots: &[PathBuf], old_root: &Path) -> Result<Vec<String>, String> {
+/// 自检每个已构建环境：改过 `pyvenv.cfg` 之后 `python.exe` 还能不能认出自己。
+///
+/// 只有解释器真的坏了才从账本里删掉（下次用到时按锁文件重建）。控制台脚本
+/// （`Scripts/*.exe`）里编死的旧路径改不了，但引擎只走 `python -m`，所以只作为
+/// 提示返回，不触发重建 —— 否则一次搬家就是几十 GB 的重新下载。
+fn verify_environments(roots: &[PathBuf], old_root: &Path) -> Result<(Vec<String>, Vec<String>), String> {
     let mut rebuild = Vec::new();
+    let mut warnings = Vec::new();
     for directory in roots {
         let ledger = directory.join("engine-environments.json");
         let Ok(bytes) = fs::read(&ledger) else { continue };
@@ -378,13 +385,14 @@ fn verify_environments(roots: &[PathBuf], old_root: &Path) -> Result<Vec<String>
                 .unwrap_or_default()
                 .to_string();
             let python = PathBuf::from(python);
-            let healthy = python.is_file()
-                && prefix_of(&python).is_some()
-                && !shim_has_old_root(&python, old_root);
-            if !healthy {
+            if !(python.is_file() && prefix_of(&python).is_some()) {
                 entries.remove(&key);
                 rebuild.push(key);
                 changed = true;
+                continue;
+            }
+            if shim_has_old_root(&python, old_root) {
+                warnings.push(key);
             }
         }
         if changed {
@@ -392,7 +400,7 @@ fn verify_environments(roots: &[PathBuf], old_root: &Path) -> Result<Vec<String>
             fs::write(&ledger, text).map_err(|error| format!("无法更新 {}：{error}", ledger.display()))?;
         }
     }
-    Ok(rebuild)
+    Ok((rebuild, warnings))
 }
 
 /// `Scripts/*.exe` 里是否编着旧的解释器路径（uv/pip 的控制台脚本就是这样）。
@@ -498,7 +506,9 @@ fn relocate_tree(root: &Path, target: &Path, emit_progress: &mut dyn FnMut(&'sta
 
     recreate_links(target, root, &links)?;
     rewrite_environment_paths(target, root, &mut report)?;
-    report.rebuild = verify_environments(&venv_roots(target), root)?;
+    let (rebuild, warnings) = verify_environments(&venv_roots(target), root)?;
+    report.rebuild = rebuild;
+    report.shim_warnings = warnings;
 
     // 新位置至少要有一个可执行的内核，否则宁可回滚也不动旧目录。
     if !target.join("atelier-kernel.exe").is_file() {
