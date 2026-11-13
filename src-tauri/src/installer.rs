@@ -720,14 +720,10 @@ fn prewarm_domains(app: &AppHandle, port: u16) -> usize {
                         receipts += 1;
                         from_receipts += targets as usize;
                         // 回执里的原始 JSON 不该出现在界面上(用户看的是"在做什么")。
-                        // started=0 表示这次没新建环境:可能是全建好了,也可能是之前那次预热
-                        // 还在建,所以拿环境账本说清楚,别让日志自相矛盾。
+                        // started=0 有两种含义(已全部就绪 / 上一次预热还在建),这里不下结论,
+                        // 由随后订阅的 /api/environments 快照说明真实进度。
                         let note = if targets == 0 {
-                            match crate::variant_runtime::install_dir().map(|root| env_progress(&root)) {
-                                Ok((ready, total, missing)) if total > 0 && ready < total =>
-                                    format!("运行环境 {ready}/{total}，还在等 {}", missing.join("、")),
-                                _ => "环境已全部就绪，沿用已有的".to_string(),
-                            }
+                            "没有新建环境，进度以实例上报为准".to_string()
                         } else {
                             format!("{targets} 个环境要构建")
                         };
@@ -742,178 +738,158 @@ fn prewarm_domains(app: &AppHandle, port: u16) -> usize {
     // 有回执就以回执为准(0 也算数:已全部就绪,不必等任何 ready)
     if receipts > 0 { from_receipts } else { started }
 }
-/// 目录体积(逐层累加文件大小)。用于把 uv 缓存的增长换算成实时下载速率。
-fn dir_bytes(path: &Path) -> u64 {
-    let mut total = 0u64;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            match entry.file_type() {
-                Ok(t) if t.is_dir() => total += dir_bytes(&entry.path()),
-                Ok(_) => total += entry.metadata().map(|m| m.len()).unwrap_or(0),
-                Err(_) => {}
-            }
+/// 环境供给快照:由 web 域汇总引擎域的推送,启动器只读这一份,不再自己扫目录/读账本。
+#[derive(Default, Clone, Debug)]
+struct EnvView {
+    supported: bool,
+    source: String,
+    stage: String,
+    ready: u64,
+    total: u64,
+    missing: Vec<String>,
+    failed: Vec<String>,
+    current: Option<String>,
+    rate: u64,
+    log: String,
+    updated: Option<f64>,
+    error: Option<String>,
+}
+
+impl EnvView {
+    /// 界面那一行的说明文字:永远说清"几个就绪、还在等谁"。
+    fn detail(&self) -> String {
+        if self.source == "ledger" {
+            return match &self.error {
+                Some(note) => format!("{} 个运行环境已就绪（{note}）", self.ready),
+                None => format!("{} 个运行环境已就绪（等待引擎域进度）", self.ready),
+            };
+        }
+        match self.stage.as_str() {
+            "done" => format!("运行环境 {}/{} 就绪", self.ready, self.total),
+            "idle" => "没有需要构建的运行环境".to_string(),
+            "failed" => format!("运行环境 {}/{} 就绪，失败：{}",
+                self.ready, self.total, self.failed.join("、")),
+            _ if !self.missing.is_empty() => format!("运行环境 {}/{} 就绪 · 还在等 {}",
+                self.ready, self.total, self.missing.join("、")),
+            _ => format!("运行环境 {}/{} 就绪", self.ready, self.total),
         }
     }
-    total
 }
-/// 环境就绪情况,直接读域的账本而不是数日志:
-/// `engine-environments.json` 是 engines 域建好一个环境后写的(键 `<env>/<platform>`,
-/// 值是 python 路径);`environments/<env>/windows-x86_64` 是发行包里声明要建的清单。
-/// 两边的交集就是这个安装"该有几个环境 / 已经有几个"。
-fn env_progress(root: &Path) -> (usize, usize, Vec<String>) {
-    let specs = root.join("engine-root").join("domains").join("engines").join("environments");
-    let names: Vec<String> = match fs::read_dir(&specs) {
-        Ok(entries) => entries.flatten()
-            .filter(|entry| entry.path().join("windows-x86_64").is_dir())
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .collect(),
-        Err(_) => Vec::new(),
-    };
-    if names.is_empty() { return (0, 0, Vec::new()) }
-    let registry = root.join("engine-root").join(".venvs").join("engine-environments.json");
-    let built = fs::read_to_string(&registry).ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|value| value.as_object().cloned())
+
+/// 读一次 web 的 /api/environments。404 表示这套装配没有该接口,调用方据此收手。
+fn environment_view(port: u16, client: &reqwest::blocking::Client) -> Result<EnvView, String> {
+    let response = client.get(format!("http://127.0.0.1:{port}/api/environments"))
+        .send().map_err(|error| format!("请求 /api/environments 失败: {error}"))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(EnvView::default());
+    }
+    if !status.is_success() {
+        return Err(format!("/api/environments 返回 {}", status.as_u16()));
+    }
+    let body: serde_json::Value = response.json()
+        .map_err(|error| format!("解析 /api/environments 失败: {error}"))?;
+    let text_of = |value: &serde_json::Value, key: &str| value.get(key)
+        .and_then(|item| item.as_str()).map(|item| item.to_string());
+    let count_of = |value: &serde_json::Value, key: &str| value.get(key)
+        .and_then(|item| item.as_u64()).unwrap_or(0);
+    let list_of = |value: &serde_json::Value, key: &str| value.get(key)
+        .and_then(|item| item.as_array())
+        .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
-    let mut missing = Vec::new();
-    let mut ready = 0usize;
-    for name in &names {
-        let done = built.iter().any(|(key, entry)| {
-            key.split('/').next() == Some(name.as_str())
-                && entry.get("python").and_then(|path| path.as_str())
-                    .map(|path| Path::new(path).is_file()).unwrap_or(false)
+    let source = text_of(&body, "source").unwrap_or_else(|| "engines".to_string());
+    let error = text_of(&body, "error");
+    if source == "ledger" {
+        // 引擎域还没推送:web 只报账本里已就绪的个数,总数与当前项都不知道。
+        return Ok(EnvView {
+            supported: true, source, error,
+            ready: count_of(&body, "ledger_ready"),
+            stage: "unknown".to_string(),
+            ..Default::default()
         });
-        if done { ready += 1 } else { missing.push(name.clone()) }
     }
-    (ready, names.len(), missing)
+    let snapshot = body.get("environments").cloned().unwrap_or(serde_json::Value::Null);
+    Ok(EnvView {
+        supported: true,
+        source,
+        stage: text_of(&snapshot, "stage").unwrap_or_else(|| "unknown".to_string()),
+        ready: count_of(&snapshot, "ready"),
+        total: count_of(&snapshot, "total"),
+        missing: list_of(&snapshot, "missing"),
+        failed: list_of(&snapshot, "failed"),
+        current: text_of(&snapshot, "current"),
+        rate: count_of(&snapshot, "rate"),
+        log: text_of(&snapshot, "log").unwrap_or_default(),
+        updated: snapshot.get("updated_at").and_then(|item| item.as_f64()),
+        error: None,
+    })
 }
 
-/// 轮询 /api/logs 抓 `[PREWARM]` 行(web 的日志既有 SSE 也有历史接口,轮询更稳):
-/// 每 2 秒刷一次覆盖层,速率用 uv 缓存的增长算,就绪数读环境账本。
+/// 订阅 web 的环境供给进度:每 2 秒一帧,到终态就收工。
 ///
-/// **什么时候收工**:
-/// 1. 成功:`engine-environments.json` 里的就绪数 >= 发行包声明的环境数(读账本,不数日志);
-/// 2. 空转:连续 300 秒既没有新的 `[PREWARM]` 行、uv 缓存也没有增长 —— 两条都不动了才算卡住,
-///    只静一边不算(下载时会闷头刷缓存,编译 wheel 时会闷头不写缓存);
-/// 3. 硬上限 6 小时,防止某个环境一直失败时挂死。
+/// 收工条件:stage=done / stage=failed 立即结束;stage=idle 等满 180 秒(管线还没声明需求,
+/// 再等也没意义);6 分钟没有任何变化(构建在 kernel 里继续,界面不该无限挂着);6 小时硬上限。
 ///
-/// `expected` 是回执说"要等几个 ready"。回执给 0 有两种含义——真的都就绪了,或者构建
-/// 已经在跑(预热是幂等的,重复请求不会新建环境)。前一种该立刻收工,后一种要接着看,
-/// 所以只有调用方明确要等(`wait_for_unknown`)时才继续轮询。
-///
-/// 关键:每次只发**一条**带速率的事件。以前速率和日志分两条发,日志那条不带 rate,
-/// 界面上的实时速度就会被下一条事件抹掉 —— 看起来像"速度被删了"。
-fn poll_prewarm(app: &AppHandle, port: u16, expected: usize, wait_for_unknown: bool) {
-    trace(format!("poll: enter expected={expected} wait_unknown={wait_for_unknown}"));
-    if expected == 0 && !wait_for_unknown { trace("poll: nothing to wait for"); return }
+/// 旧实现自己扫 `environments/*/windows-x86_64` 数总数、读 `engine-environments.json` 算就绪、
+/// 轮询 `[PREWARM]` 日志并量 uv 缓存算速率——三处都会和引擎域的真实策略漂移。现在全部以
+/// web 给的快照为准,启动器只负责渲染。
+fn poll_environment(app: &AppHandle, port: u16) -> EnvView {
     let Ok(client) = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(20)).no_proxy().build() else {
-        trace("poll: client build failed");
-        return
+        .timeout(Duration::from_secs(20)).no_proxy().build() else {
+        return EnvView::default()
     };
-    trace("poll: client ready");
-    let url = format!("http://127.0.0.1:{port}/api/logs?limit=200");
     let started = Instant::now();
-    // 日志边界:先取当前最新 id 作为基线,避免把历史 ready 行当成这次的事件。
-    let mut last_id = 0u64;
-    if let Ok(body) = client.get(&url).send().and_then(|r| r.json::<serde_json::Value>()) {
-        if let Some(rows) = body.get("logs").and_then(|l| l.as_array()) {
-            last_id = rows.iter()
-                .filter_map(|row| row.get("id").and_then(|v| v.as_u64()))
-                .max()
-                .unwrap_or(0);
-        }
-    }
-    let mut last_message = String::new();
-    // 缓存体积在**独立线程**里量:`.uv-cache` 是几万个文件,在机械盘上走一遍要几十秒。
-    // 以前在轮询线程里同步量,第一帧就被卡住,界面停在回执那一句上好几分钟不动。
-    let stop_sampler = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let sample: std::sync::Arc<std::sync::Mutex<Option<(u64, Instant)>>> = Default::default();
-    if let Ok(root) = crate::variant_runtime::install_dir() {
-        let cache = root.join("engine-root").join(".venvs").join(".uv-cache");
-        let sample = sample.clone();
-        let stop = stop_sampler.clone();
-        std::thread::spawn(move || {
-            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let size = dir_bytes(&cache);
-                if let Ok(mut slot) = sample.lock() {
-                    *slot = Some((size, Instant::now()));
-                }
-                for _ in 0..8 {
-                    if stop.load(std::sync::atomic::Ordering::Relaxed) { return }
-                    thread::sleep(Duration::from_secs(1));
-                }
-            }
-        });
-    }
-    let mut rate = 0u64;
-    let mut previous_sample: Option<(u64, Instant)> = None;
-    let mut last_activity = Instant::now();
-    trace(format!("poll: baseline id={last_id}"));
-
-    // 只保留一个很宽的总上限:环境构建可能几十分钟,不能因为"暂时没新日志"就提前进界面。
-    while started.elapsed() < std::time::Duration::from_secs(6 * 3600) {
+    let mut last_change = Instant::now();
+    let mut fingerprint = String::new();
+    let mut view = EnvView::default();
+    let mut failures = 0usize;
+    loop {
         thread::sleep(Duration::from_secs(2));
-        // 速率只读采样线程的最近结果,这里绝不走目录。
-        let latest = sample.lock().ok().and_then(|slot| *slot);
-        if let (Some((size, at)), Some((before, at_before))) = (latest, previous_sample) {
-            let elapsed = at.duration_since(at_before).as_secs_f64();
-            if elapsed >= 0.5 {
-                if size > before {
-                    rate = ((size - before) as f64 / elapsed) as u64;
-                    // 缓存在长就说明还在干活:编译 wheel 时日志会安静几分钟,不能因此判空转。
-                    last_activity = Instant::now();
-                } else {
-                    rate = 0;
-                }
-                previous_sample = Some((size, at));
-            }
-        } else if let Some(latest) = latest {
-            previous_sample = Some(latest);
+        if started.elapsed() > Duration::from_secs(6 * 3600) {
+            emit(app, Progress::phase("env", "构建运行环境")
+                .log("运行环境构建超过 6 小时，先让它继续跑"));
+            break;
         }
-        if let Ok(body) = client.get(&url).send().and_then(|r| r.json::<serde_json::Value>()) {
-            if let Some(rows) = body.get("logs").and_then(|l| l.as_array()) {
-                // 按 id 升序处理:一次轮询里可能同时来了多条 ready,倒序迭代会漏数。
-                let mut fresh: Vec<(u64, String)> = rows.iter()
-                    .filter_map(|row| {
-                        let id = row.get("id").and_then(|v| v.as_u64())?;
-                        let message = row.get("message").and_then(|m| m.as_str())?;
-                        (id > last_id && message.contains("[PREWARM]"))
-                            .then(|| (id, message.chars().take(180).collect::<String>()))
-                    })
-                    .collect();
-                fresh.sort_by_key(|(id, _)| *id);
-                if !fresh.is_empty() { last_activity = Instant::now() }
-                for (id, message) in fresh {
-                    last_id = id;
-                    last_message = message;
+        match environment_view(port, &client) {
+            Ok(fresh) => {
+                failures = 0;
+                if !fresh.supported {
+                    emit(app, Progress::phase("env", "构建运行环境")
+                        .log("当前装配没有 /api/environments，跳过运行环境进度"));
+                    break;
+                }
+                let next = format!("{}|{}|{}|{:.3}", fresh.stage, fresh.ready,
+                    fresh.current.clone().unwrap_or_default(), fresh.updated.unwrap_or(0.0));
+                if next != fingerprint {
+                    fingerprint = next;
+                    last_change = Instant::now();
+                }
+                emit(app, Progress::phase("env", "构建运行环境")
+                    .with_rate(fresh.rate)
+                    .with_detail(fresh.detail())
+                    .log(fresh.log.clone()));
+                let stage = fresh.stage.clone();
+                view = fresh;
+                if stage == "done" || stage == "failed" { break }
+                if stage == "idle" && started.elapsed() > Duration::from_secs(180) { break }
+                if last_change.elapsed() > Duration::from_secs(360) {
+                    emit(app, Progress::phase("env", "构建运行环境")
+                        .log("运行环境构建长时间没有进展，先让它继续跑"));
+                    break;
                 }
             }
+            Err(error) => {
+                failures += 1;
+                trace(format!("env view failed ({failures}): {error}"));
+                if failures >= 15 {
+                    emit(app, Progress::phase("env", "构建运行环境")
+                        .log(format!("读不到运行环境进度：{error}")));
+                    break;
+                }
+            }
         }
-        trace(format!("poll: got logs, last_message={:?}", last_message.chars().take(60).collect::<String>()));
-        let (ready, total, missing) = crate::variant_runtime::install_dir()
-            .map(|root| env_progress(&root)).unwrap_or((0, 0, Vec::new()));
-        trace(format!("poll: env {ready}/{total}"));
-        // 卡在 7/8 时要说清楚在等谁,不然只能看到一个不动的数字。
-        let detail = if total > 0 && !missing.is_empty() {
-            format!("运行环境 {ready}/{total} 就绪 · 还在等 {}", missing.join("、"))
-        } else if total > 0 {
-            format!("运行环境 {ready}/{total} 就绪")
-        } else {
-            format!("{ready} 个环境已就绪")
-        };
-        emit(app, Progress::phase("env", "构建运行环境")
-            .with_rate(rate)
-            .with_detail(detail)
-            .log(last_message.clone()));
-        trace("poll: emitted");
-        if total > 0 && ready >= total { trace("poll: all ready"); break }
-        // 有环境构建失败时 ready 永远到不了 total:连续五分钟没有新的预热日志就当结束了
-        // (构建本身在 kernel 里继续,界面不该无限挂着)。
-        if last_activity.elapsed() > std::time::Duration::from_secs(300) { break }
     }
-    // 收尾时停掉采样线程,别让它跟着进程一直空转。
-    stop_sampler.store(true, std::sync::atomic::Ordering::Relaxed);
+    view
 }
 
 /// 目标盘剩余空间。走一次 PowerShell,避免为一次查询引 sysinfo 的 disk feature。
@@ -1023,34 +999,10 @@ pub fn run_with(app: &AppHandle, start: bool) -> Result<String, String> {
     let _ = fs::remove_dir_all(&staging);
     // 组件换进来以后"程序"那一段就变了,后台重算一次占用。
     crate::storage::refresh(app.clone());
-    // 域运行环境:报告就绪情况。真正的构建由 engines 域在首次加载某引擎时按它自己的
-    // 命名约定(.venvs/.engine-builds/<env>-<platform>-<hash>)完成,启动器只做体检,
-    // 避免两处各自猜路径。
-    emit(app, Progress::phase("env", "检查域运行环境"));
-    let env_root = install.join("engine-root").join("domains").join("engines").join("environments");
-    let builds = install.join("engine-root").join(".venvs").join(".engine-builds");
-    let mut env_total = 0usize;
-    let mut env_ready = 0usize;
-    if let Ok(entries) = fs::read_dir(&env_root) {
-        let names: Vec<String> = entries.flatten()
-            .filter(|e| e.path().is_dir())
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
-        for name in names {
-            env_total += 1;
-            let built = fs::read_dir(&builds).ok().map(|dirs| dirs.flatten()
-                .any(|d| d.file_name().to_string_lossy().starts_with(&name))).unwrap_or(false);
-            if built { env_ready += 1 }
-            emit(app, Progress::phase("env", format!("运行环境 {name}"))
-                .with_percent(((env_total as f32) / (env_total.max(1) as f32)) * 100.0)
-                .with_detail(if built { "已就绪" } else { "首次调用该引擎时自动构建" })
-                .log(format!("{name}: {}", if built { "已就绪" } else { "未构建,首次使用时自动建" })));
-        }
-    }
-    if env_total > 0 {
-        emit(app, Progress::phase("env", format!("运行环境 {env_ready}/{env_total} 就绪")).log(format!("环境就绪 {env_ready}/{env_total}")));
-    }    // 更新即启动；首次安装(start=false)交给调用方在卡片页之后单独预热。
+    // 更新即启动；首次安装(start=false)交给调用方在卡片页之后单独预热。
+    // 运行环境不再由启动器自己扫目录/读账本统计:实例起来后订阅 web 的 /api/environments。
     let mut live: Option<u16> = None;
+    let mut env_view = EnvView::default();
     if start {
     emit(app, Progress::phase("start", "启动实例"));
     match tauri::async_runtime::block_on(crate::variant_runtime::open_workbench(None, None)) {
@@ -1059,12 +1011,13 @@ pub fn run_with(app: &AppHandle, start: bool) -> Result<String, String> {
             emit(app, Progress::phase("check", "实例已就绪").log(format!("四域 active，端口 {port}")));
             let targets = prewarm_domains(app, port);
             emit(app, Progress::phase("env", format!("预热目标 {targets} 个")).log(format!("发现 {targets} 个 <domain>.prewarm")));
-            poll_prewarm(app, port, targets, false);
+            env_view = poll_environment(app, port);
         }
         Err(error) => emit(app, Progress::phase("fail", "实例启动失败".to_string())
             .log(format!("已更新完成，但启动实例失败：{error}"))),
     }
-    }    let env_note = if env_total > 0 { format!("运行环境 {env_ready}/{env_total} 就绪") } else { "无域环境".to_string() };
+    }
+    let env_note = if env_view.supported { env_view.detail() } else { "无域环境".to_string() };
     emit(app, Progress::phase("done", format!("已更新到 {version}")).with_detail(env_note)
         .with_bytes(total, Some(total), None)
         .log(format!("VERSION → {version}")));
@@ -1115,19 +1068,23 @@ pub(crate) fn prewarm_blocking(app: &AppHandle) -> Result<Option<u16>, String> {
     trace(format!("prewarm: instance on {port}"));
     let targets = prewarm_domains(app, port);
     trace(format!("prewarm: targets={targets}"));
-    // 手动「准备运行环境」时,即使回执说 0 也接着看:可能构建已经在跑。
-    poll_prewarm(app, port, targets, true);
+    // 预热触发完之后,进度全部由实例上报:启动器不再自己数环境。
+    let view = poll_environment(app, port);
     trace("prewarm: poll returned");
     // 轮询退出时要给一个终态事件,否则覆盖层会一直停在最后一帧、数字再也不动。
-    let (ready, total, missing) = crate::variant_runtime::install_dir()
-        .map(|root| env_progress(&root)).unwrap_or((0, 0, Vec::new()));
-    let (label, log) = if total > 0 && ready < total {
-        (format!("运行环境 {ready}/{total} 就绪"),
-         format!("还在等 {}；构建由 kernel 继续，可以关掉窗口", missing.join("、")))
-    } else if total > 0 {
-        (format!("运行环境 {ready}/{total} 就绪"), "运行环境已全部就绪".to_string())
-    } else {
-        ("预热结束".to_string(), String::new())
+    let (label, log) = match view.stage.as_str() {
+        "done" => (view.detail(), "运行环境已全部就绪".to_string()),
+        "failed" => (view.detail(), "有运行环境构建失败，先放它继续跑".to_string()),
+        "idle" if view.supported => (view.detail(), String::new()),
+        _ if view.supported => {
+            trace(format!("prewarm: stage={} detail={}", view.stage, view.detail()));
+            (view.detail(),
+             format!("构建由 kernel 继续，可以关掉窗口{}", match &view.current {
+                 Some(name) => format!("（当前 {name}）"),
+                 None => String::new(),
+             }))
+        }
+        _ => ("预热结束".to_string(), String::new()),
     };
     emit(app, Progress::phase("done", label).with_detail(log.clone()).log(log));
     // 环境建好/变大以后"程序"那一段也变了。
