@@ -71,6 +71,8 @@ pub async fn setup_state(state: State<'_, SettingsState>) -> Result<SetupState, 
 fn title_for(kind: &str) -> &'static str {
     match kind {
         "models" => "选择模型权重目录",
+        "install" => "选择新的安装位置",
+        "data" => "选择新的数据目录",
         _ => "选择项目数据目录",
     }
 }

@@ -252,7 +252,7 @@ pub fn ensure_data_link(root_data: &Path, chosen: &Path) -> Result<LinkOutcome, 
     Ok(LinkOutcome { changed: true, linked: true, target: chosen_text })
 }
 
-fn create_junction(link: &Path, target: &Path) -> Result<(), String> {
+pub(crate) fn create_junction(link: &Path, target: &Path) -> Result<(), String> {
     let output = Command::new("cmd.exe")
         .arg("/C")
         .arg("mklink")

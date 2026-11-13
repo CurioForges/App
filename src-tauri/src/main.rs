@@ -9,6 +9,7 @@ mod locations;
 #[allow(dead_code)]
 mod migrate;
 mod net;
+mod relocate;
 mod self_update;
 mod settings;
 mod setup;
@@ -224,6 +225,9 @@ fn main() {
             capabilities::capabilities,
             capabilities::shared_settings,
             capabilities::save_shared,
+            relocate::locations_view,
+            relocate::relocate_install,
+            relocate::relocate_data,
             setup::inspect_directory,
             setup::test_token,
             setup::complete_setup,

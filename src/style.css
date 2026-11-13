@@ -128,6 +128,13 @@
 .setting-bar .btn{flex:none}
 .setting-note{margin:0;font-size:11px;line-height:1.6;color:var(--muted)}
 .setting-note:empty{display:none}
+/* 数据目录是联接时标一句，省得用户以为两个路径写错了。 */
+.setting-hint{margin-left:6px;font-size:11px;color:var(--muted)}
+/* 迁移确认弹窗：目标路径单独一行，其余说明按段落读。 */
+.relocate-body{display:grid;gap:10px}
+.relocate-body p{margin:0;font-size:12.5px;line-height:1.65;color:var(--muted)}
+.relocate-target{padding:9px 11px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface)}
+.relocate-body code{font-family:var(--mono);font-size:11.5px;color:var(--ink)}
 .token-ok{font-size:11.5px;line-height:1.5;color:var(--accent)}
 
 /* 需要 gated 授权的权重：两列紧凑排，一行一个仓库，右边「去授权」。

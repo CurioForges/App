@@ -5,7 +5,7 @@ import {listen} from '@tauri-apps/api/event';
 import {Panel} from './design-system/ui/layout';
 import {Button, Input} from './design-system/ui/forms';
 import {Badge} from './design-system/ui/data';
-import {ConfirmDialog} from './design-system/ui/feedback';
+import {ConfirmDialog, Modal} from './design-system/ui/feedback';
 import {DropdownMenu} from './design-system/ui/DropdownMenu';
 import {Icon} from './design-system/ui/icons';
 import {AtelierBrand} from './design-system/AtelierBrand';
@@ -143,6 +143,9 @@ function UpdateOverlay({progress, log}) {
   const [updateLog, setUpdateLog] = useState('');
   const [installing, setInstalling] = useState(false);
   const [storage, setStorage] = useState(null);
+  const [locations, setLocations] = useState(null);
+  const [moveChoice, setMoveChoice] = useState(null);
+  const [moving, setMoving] = useState(false);
   const [dev, setDev] = useState(false);
 
   // Installer progress: download / verify / stage / swap each emit one event per tick.
@@ -178,9 +181,12 @@ function UpdateOverlay({progress, log}) {
 
   async function refresh() {
     try {
-      const [nextCap, nextShared] = await Promise.all([invoke('capabilities'), invoke('shared_settings')]);
+      const [nextCap, nextShared, nextLocations] = await Promise.all([
+        invoke('capabilities'), invoke('shared_settings'), invoke('locations_view'),
+      ]);
       setCap(nextCap);
       setShared(nextShared);
+      setLocations(nextLocations);
     } catch (err) { setError(String(err)); }
   }
 
@@ -290,6 +296,31 @@ function UpdateOverlay({progress, log}) {
       const picked = await invoke('choose_directory', {kind:'models', current: shared?.modelsDir || null});
       if (picked) setShared(current => ({...current, modelsDir: picked}));
     } catch (err) { setError(String(err)); }
+  }
+
+  /** 选完新位置先问一句：搬家还是重装。搬得多、重下得少，代价写清楚让人自己选。 */
+  async function chooseLocation(kind) {
+    try {
+      const current = kind === 'install' ? locations?.install : locations?.data;
+      const picked = await invoke('choose_directory', {kind, current: current || null});
+      if (!picked) return;
+      if (picked.toLowerCase() === String(current || '').toLowerCase()) return;
+      setMoveChoice({kind, target: picked});
+    } catch (err) { setError(String(err)); }
+  }
+
+  async function runRelocate(mode) {
+    if (!moveChoice) return;
+    setMoving(true); setMessage(''); setError('');
+    try {
+      const report = moveChoice.kind === 'install'
+        ? await invoke('relocate_install', {target: moveChoice.target, mode})
+        : await invoke('relocate_data', {target: moveChoice.target});
+      setMoveChoice(null);
+      setMessage(report?.message || '已迁移完成。');
+      await refresh();
+    } catch (err) { setError(String(err)); }
+    finally { setMoving(false); }
   }
 
   async function saveShared() {
@@ -413,6 +444,19 @@ function UpdateOverlay({progress, log}) {
           <div className="cap-section">
             <div className="cap-section-head"><h3>全局设置</h3><span>所有安装共用</span></div>
             <div className="setting-bar">
+              <span className="setting-label">安装位置</span>
+              <div className="setting-path" title={locations?.install || undefined}>{locations?.install || '默认位置'}</div>
+              <Button size="small" onClick={()=>chooseLocation('install')} disabled={moving || !installed}>更改</Button>
+            </div>
+            <div className="setting-bar">
+              <span className="setting-label">数据目录</span>
+              <div className="setting-path" title={locations?.data || undefined}>
+                {locations?.data || '安装目录默认位置'}
+                {locations?.dataLinked ? <span className="setting-hint">（联接）</span> : null}
+              </div>
+              <Button size="small" onClick={()=>chooseLocation('data')} disabled={moving || !installed}>更改</Button>
+            </div>
+            <div className="setting-bar">
               <span className="setting-label">权重目录</span>
               <div className="setting-path">{shared?.modelsDir || shared?.modelsDirEffective || '安装目录默认位置'}</div>
               <Button size="small" onClick={chooseModels} disabled={savingShared}>选择目录</Button>
@@ -447,6 +491,34 @@ function UpdateOverlay({progress, log}) {
       <div className="desktop-bar"><Button variant="plain" className="back-to-variants" onClick={()=>{ setWorkbenchPort(null); void refresh(); }}><Icon name="chevron" size={14}/>域能力</Button><span className="desktop-separator"/><span>{INSTALL_NAME}</span></div>
       <iframe key={workbenchPort} title={`${INSTALL_NAME} 工作台`} src={`http://127.0.0.1:${workbenchPort}/`}/>
     </div>}
+
+    <Modal
+      open={!!moveChoice}
+      onClose={()=>{ if (!moving) setMoveChoice(null); }}
+      title={moveChoice?.kind === 'install' ? '换安装位置' : '换数据目录'}
+      footer={<>
+        <Button onClick={()=>setMoveChoice(null)} disabled={moving}>取消</Button>
+        {moveChoice?.kind === 'install' && <Button onClick={()=>runRelocate('reinstall')} disabled={moving}>
+          {moving ? '处理中…' : '在新位置重新安装'}
+        </Button>}
+        <Button variant="primary" onClick={()=>runRelocate('move')} disabled={moving}>
+          {moving ? '处理中…' : moveChoice?.kind === 'install' ? '迁移到新位置' : '迁移数据'}
+        </Button>
+      </>}>
+      <div className="relocate-body">
+        <p className="setting-path relocate-target" title={moveChoice?.target}>{moveChoice?.target}</p>
+        {moveChoice?.kind === 'install' ? <>
+          <p><b>迁移</b>：把现有安装整体搬过去，引擎环境跟着走（构建好的环境会重写路径并逐个自检，
+            自检不过的下次用到时重建）。新位置验证通过后才清空旧目录。</p>
+          <p><b>重新安装</b>：在新位置按清单重新下载装配，不搬任何文件；完成后清空旧目录。</p>
+          <p className="risk">两种方式都会先停止正在运行的实例，未完成的任务需要重新跑。</p>
+        </> : <>
+          <p>把现有数据（任务记录、管线产物、数据库）搬到新位置，然后把
+            <code>{locations?.install}\data</code> 指过去；旧目录迁移成功后清空。</p>
+          <p className="risk">会先停止正在运行的实例，未完成的任务需要重新跑。</p>
+        </>}
+      </div>
+    </Modal>
 
     <ConfirmDialog
       open={!!confirm}

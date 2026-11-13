@@ -37,12 +37,12 @@ pub struct Progress {
 }
 
 impl Progress {
-    fn phase(phase: &'static str, label: impl Into<String>) -> Self {
+    pub(crate) fn phase(phase: &'static str, label: impl Into<String>) -> Self {
         Self { job: "install", phase, label: label.into(), percent: None, done: None,
                total: None, rate: None, detail: None, log: None }
     }
 
-    fn with_bytes(mut self, done: u64, total: Option<u64>, rate: Option<u64>) -> Self {
+    pub(crate) fn with_bytes(mut self, done: u64, total: Option<u64>, rate: Option<u64>) -> Self {
         self.done = Some(done);
         self.total = total;
         self.rate = rate;
@@ -54,23 +54,23 @@ impl Progress {
         self
     }
 
-    fn with_rate(mut self, rate: u64) -> Self {
+    pub(crate) fn with_rate(mut self, rate: u64) -> Self {
         self.rate = Some(rate);
         self
     }
 
-    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+    pub(crate) fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
     }
 
-    fn log(mut self, line: impl Into<String>) -> Self {
+    pub(crate) fn log(mut self, line: impl Into<String>) -> Self {
         self.log = Some(line.into());
         self
     }
 }
 
-fn emit(app: &AppHandle, progress: Progress) {
+pub(crate) fn emit_progress(app: &AppHandle, progress: Progress) {
     // A missing window (tray-only) must not abort an install.
     let _ = app.emit("atelier://progress", progress);
 }
@@ -105,7 +105,7 @@ pub(crate) fn report(app: &AppHandle, phase: &'static str, label: impl Into<Stri
     let mut progress = Progress::phase(phase, label);
     progress.percent = percent;
     progress.log = log;
-    emit(app, progress);
+    emit_progress(app, progress);
 }
 
 #[derive(Debug, Deserialize)]
@@ -410,7 +410,7 @@ fn fetch_once(
                     .with_bytes(base + done, Some(total_all), Some(done / elapsed))
                     .with_detail(format!("组件 {}/{} · {}", index + 1, count, item.name));
                 progress.percent = Some(((index as f32 + frac) / (count.max(1) as f32)) * 100.0);
-                emit(app, progress);
+                emit_progress(app, progress);
             }
         }
         file.flush().ok();
@@ -436,7 +436,7 @@ fn download(app: &AppHandle, item: &Item, dir: &Path, index: usize, count: usize
         && verify(app, item, &target).is_ok()
     {
         let size = fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
-        emit(app, Progress::phase("download", format!("{} 命中缓存", item.name))
+        emit_progress(app, Progress::phase("download", format!("{} 命中缓存", item.name))
             .with_bytes(base + size, Some(total_all.max(1)), None)
             .with_percent(((index as f32 + 1.0) / (count.max(1) as f32)) * 100.0)
             .with_detail(format!("组件 {}/{} · {}", index + 1, count, item.name))
@@ -447,7 +447,7 @@ fn download(app: &AppHandle, item: &Item, dir: &Path, index: usize, count: usize
     for attempt in 1..=DOWNLOAD_ATTEMPTS {
         if attempt > 1 {
             let backoff = 1u64 << (attempt as u32 - 1); // 2s / 4s / 8s
-            emit(app, Progress::phase("download", format!("{} 重试中（{}）", item.name, attempt))
+            emit_progress(app, Progress::phase("download", format!("{} 重试中（{}）", item.name, attempt))
                 .with_bytes(base, Some(total_all), None)
                 .with_detail(format!("组件 {}/{} · 第 {}/{} 次尝试", index + 1, count, attempt, DOWNLOAD_ATTEMPTS))
                 .log(format!("{} 下载中断（{}），{} 秒后第 {} 次重试", item.asset, last, backoff, attempt)));
@@ -483,7 +483,7 @@ fn verify(app: &AppHandle, item: &Item, file: &Path) -> Result<(), String> {
         // verification for a domain, but do not brick the update on the kernel runtime — the
         // gap is tracked and will be closed by publishing sidecars there.
         if item.kernel {
-            emit(app, Progress::phase("verify", format!("跳过校验 {}", item.name))
+            emit_progress(app, Progress::phase("verify", format!("跳过校验 {}", item.name))
                 .log(format!("{} 没有可用的 sha256 旁挂（{}），本次不做逐字节校验", item.asset, failure)));
             return Ok(());
         }
@@ -696,7 +696,7 @@ fn prewarm_domains(app: &AppHandle, port: u16) -> usize {
             .map(|routes| routes.iter().any(|r| r.as_str() == Some(wanted.as_str())))
             .unwrap_or(false);
         if !has { continue }
-        emit(app, Progress::phase("env", format!("预热 {id}"))
+        emit_progress(app, Progress::phase("env", format!("预热 {id}"))
             .log(format!("{id}.prewarm 已调用")));
         started += 1;
         // web 域契约:target 是完整处理器地址,message_type 必须显式给出。
@@ -710,7 +710,7 @@ fn prewarm_domains(app: &AppHandle, port: u16) -> usize {
                 let status = resp.status();
                 let text = resp.text().unwrap_or_default();
                 if !status.is_success() {
-                    emit(app, Progress::phase("env", format!("{id}.prewarm 被拒绝"))
+                    emit_progress(app, Progress::phase("env", format!("{id}.prewarm 被拒绝"))
                         .log(format!("{} prewarm 失败 {}: {}", id, status.as_u16(),
                              text.chars().take(200).collect::<String>())));
                     continue;
@@ -737,11 +737,11 @@ fn prewarm_domains(app: &AppHandle, port: u16) -> usize {
                         } else {
                             format!("{targets} 个环境要构建")
                         };
-                        emit(app, Progress::phase("env", format!("{id} 预热已受理")).log(note));
+                        emit_progress(app, Progress::phase("env", format!("{id} 预热已受理")).log(note));
                     }
                 }
             }
-            Err(error) => emit(app, Progress::phase("env", format!("{id}.prewarm 无法连接"))
+            Err(error) => emit_progress(app, Progress::phase("env", format!("{id}.prewarm 无法连接"))
                 .log(format!("{} prewarm 请求失败: {}", id, error))),
         }
     }
@@ -856,7 +856,7 @@ fn poll_environment(app: &AppHandle, port: u16) -> EnvView {
     loop {
         thread::sleep(Duration::from_secs(2));
         if started.elapsed() > Duration::from_secs(6 * 3600) {
-            emit(app, Progress::phase("env", "构建运行环境")
+            emit_progress(app, Progress::phase("env", "构建运行环境")
                 .log("运行环境构建超过 6 小时，先让它继续跑"));
             break;
         }
@@ -864,7 +864,7 @@ fn poll_environment(app: &AppHandle, port: u16) -> EnvView {
             Ok(fresh) => {
                 failures = 0;
                 if !fresh.supported {
-                    emit(app, Progress::phase("env", "构建运行环境")
+                    emit_progress(app, Progress::phase("env", "构建运行环境")
                         .log("当前装配没有 /api/environments，跳过运行环境进度"));
                     break;
                 }
@@ -874,7 +874,7 @@ fn poll_environment(app: &AppHandle, port: u16) -> EnvView {
                     fingerprint = next;
                     last_change = Instant::now();
                 }
-                emit(app, Progress::phase("env", "构建运行环境")
+                emit_progress(app, Progress::phase("env", "构建运行环境")
                     .with_rate(fresh.rate)
                     .with_detail(fresh.detail())
                     .log(fresh.log.clone()));
@@ -883,7 +883,7 @@ fn poll_environment(app: &AppHandle, port: u16) -> EnvView {
                 if stage == "done" || stage == "failed" { break }
                 if stage == "idle" && started.elapsed() > Duration::from_secs(180) { break }
                 if last_change.elapsed() > Duration::from_secs(360) {
-                    emit(app, Progress::phase("env", "构建运行环境")
+                    emit_progress(app, Progress::phase("env", "构建运行环境")
                         .log("运行环境构建长时间没有进展，先让它继续跑"));
                     break;
                 }
@@ -892,7 +892,7 @@ fn poll_environment(app: &AppHandle, port: u16) -> EnvView {
                 failures += 1;
                 trace(format!("env view failed ({failures}): {error}"));
                 if failures >= 15 {
-                    emit(app, Progress::phase("env", "构建运行环境")
+                    emit_progress(app, Progress::phase("env", "构建运行环境")
                         .log(format!("读不到运行环境进度：{error}")));
                     break;
                 }
@@ -919,7 +919,7 @@ pub fn run(app: &AppHandle) -> Result<String, String> { run_with(app, true) }
 
 /// start=false 只装不启动、不预热（首次安装用：装完先进卡片页，再单独预热）。
 pub fn run_with(app: &AppHandle, start: bool) -> Result<String, String> {
-    emit(app, Progress::phase("resolve", "正在读取组合配置"));
+    emit_progress(app, Progress::phase("resolve", "正在读取组合配置"));
     let composition = composition()?;
     // 版本号取自清单里的镜像 release（v0.1.20 → 0.1.20），组件也全部按这个 tag 取。
     let release = composition.release_tag();
@@ -929,7 +929,7 @@ pub fn run_with(app: &AppHandle, start: bool) -> Result<String, String> {
     }
     let plan = plan(&composition);
     let total: u64 = plan.items.iter().map(|i| i.size).sum();
-    emit(app, Progress::phase("plan", format!("发行版 {}（{} 个组件）", plan.train, plan.items.len()))
+    emit_progress(app, Progress::phase("plan", format!("发行版 {}（{} 个组件）", plan.train, plan.items.len()))
         .with_bytes(0, Some(total), None)
         .with_detail(format!("{} / {} 个组件", 0, plan.items.len())));
 
@@ -942,7 +942,7 @@ pub fn run_with(app: &AppHandle, start: bool) -> Result<String, String> {
         if free < need {
             let msg = format!("磁盘空间不足：需要约 {:.0} GB，可用 {:.0} GB",
                 need as f64 / 1e9, free as f64 / 1e9);
-            emit(app, Progress::phase("fail", msg.clone()).log(msg.clone()));
+            emit_progress(app, Progress::phase("fail", msg.clone()).log(msg.clone()));
             return Err(msg);
         }
     }
@@ -963,10 +963,10 @@ pub fn run_with(app: &AppHandle, start: bool) -> Result<String, String> {
     }
     for (index, (item, file)) in fetched.into_iter().enumerate() {
         // 解压没有文件级进度:先发一条不确定态(环转圈),别让数字停在那儿假装卡住。
-        emit(app, Progress::phase("stage", format!("正在解压 {}", item.name))
+        emit_progress(app, Progress::phase("stage", format!("正在解压 {}", item.name))
             .with_detail(format!("组件 {}/{} · {}", index + 1, count, item.name)));
         let rate = extract(item, &file, &staging, &tree)?;
-        emit(app, Progress::phase("stage", format!("{} 已就位", item.name))
+        emit_progress(app, Progress::phase("stage", format!("{} 已就位", item.name))
             .with_bytes(bytes, Some(total), None)
             .with_percent(((index as f32 + 1.0) / (count.max(1) as f32)) * 100.0)
             .with_rate(rate)
@@ -975,11 +975,11 @@ pub fn run_with(app: &AppHandle, start: bool) -> Result<String, String> {
     }
     // 启动配置来自同一个 tag:域清单、命令路径都由发行版自己写,启动器不硬编码,
     // 免得组出来的树和域 artifact 对不上。
-    emit(app, Progress::phase("stage", "写入启动配置").log(format!("读取 {} 的 {BOOT_ASSET}", release)));
+    emit_progress(app, Progress::phase("stage", "写入启动配置").log(format!("读取 {} 的 {BOOT_ASSET}", release)));
     let boot = variant_boot(&release)?;
     fs::write(tree.join("kernel_boot.json"), boot).map_err(|e| format!("无法写入 kernel_boot.json：{e}"))?;
 
-    emit(app, Progress::phase("swap", "正在换入发行文件"));
+    emit_progress(app, Progress::phase("swap", "正在换入发行文件"));
     // 只保留最新一份退路:换入前清掉更早的 .old-*（每个约 700 MB）。
     let keep = format!(".old-{}", plan.train);
     if let Ok(entries) = fs::read_dir(&install) {
@@ -1013,21 +1013,21 @@ pub fn run_with(app: &AppHandle, start: bool) -> Result<String, String> {
     let mut live: Option<u16> = None;
     let mut env_view = EnvView::default();
     if start {
-    emit(app, Progress::phase("start", "启动实例"));
+    emit_progress(app, Progress::phase("start", "启动实例"));
     match tauri::async_runtime::block_on(crate::variant_runtime::open_workbench(None, None)) {
         Ok(port) => {
             live = Some(port);
-            emit(app, Progress::phase("check", "实例已就绪").log(format!("四域 active，端口 {port}")));
+            emit_progress(app, Progress::phase("check", "实例已就绪").log(format!("四域 active，端口 {port}")));
             let targets = prewarm_domains(app, port);
-            emit(app, Progress::phase("env", format!("预热目标 {targets} 个")).log(format!("发现 {targets} 个 <domain>.prewarm")));
+            emit_progress(app, Progress::phase("env", format!("预热目标 {targets} 个")).log(format!("发现 {targets} 个 <domain>.prewarm")));
             env_view = poll_environment(app, port);
         }
-        Err(error) => emit(app, Progress::phase("fail", "实例启动失败".to_string())
+        Err(error) => emit_progress(app, Progress::phase("fail", "实例启动失败".to_string())
             .log(format!("已更新完成，但启动实例失败：{error}"))),
     }
     }
     let env_note = if env_view.supported { env_view.detail() } else { "无域环境".to_string() };
-    emit(app, Progress::phase("done", format!("已更新到 {version}")).with_detail(env_note)
+    emit_progress(app, Progress::phase("done", format!("已更新到 {version}")).with_detail(env_note)
         .with_bytes(total, Some(total), None)
         .log(format!("VERSION → {version}")));
     Ok(match live {
@@ -1044,7 +1044,7 @@ pub async fn install_variant(app: AppHandle) -> Result<String, String> {
         let _ = crate::variant_runtime::stop_sync();
         let result = run(&app);
         if let Err(error) = &result {
-            emit(&app, Progress::phase("fail", format!("更新失败：{error}")).log(error.clone()));
+            emit_progress(&app, Progress::phase("fail", format!("更新失败：{error}")).log(error.clone()));
         }
         result
     })
@@ -1061,7 +1061,7 @@ pub async fn install_only(app: AppHandle) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let result = run_with(&app, false);
         if let Err(error) = &result {
-            emit(&app, Progress::phase("fail", format!("安装失败：{error}")).log(error.clone()));
+            emit_progress(&app, Progress::phase("fail", format!("安装失败：{error}")).log(error.clone()));
         }
         result
     })
@@ -1072,7 +1072,7 @@ pub async fn install_only(app: AppHandle) -> Result<String, String> {
 /// 启动实例 + 预热环境的主体。命令和排障钩子共用这一份,避免两条路径行为不一致。
 pub(crate) fn prewarm_blocking(app: &AppHandle) -> Result<Option<u16>, String> {
     trace("prewarm: begin");
-    emit(app, Progress::phase("start", "启动实例"));
+    emit_progress(app, Progress::phase("start", "启动实例"));
     let port = tauri::async_runtime::block_on(crate::variant_runtime::open_workbench(None, None))?;
     trace(format!("prewarm: instance on {port}"));
     let targets = prewarm_domains(app, port);
@@ -1095,7 +1095,7 @@ pub(crate) fn prewarm_blocking(app: &AppHandle) -> Result<Option<u16>, String> {
         }
         _ => ("预热结束".to_string(), String::new()),
     };
-    emit(app, Progress::phase("done", label).with_detail(log.clone()).log(log));
+    emit_progress(app, Progress::phase("done", label).with_detail(log.clone()).log(log));
     // 环境建好/变大以后"程序"那一段也变了。
     crate::storage::refresh(app.clone());
     Ok(Some(port))
