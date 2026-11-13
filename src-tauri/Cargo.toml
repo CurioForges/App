@@ -1,6 +1,6 @@
 [package]
 name = "atelier-desktop"
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 [[bin]]
 name = "atelier"
@@ -17,6 +17,7 @@ serde_json = "1"
 # blocking client is also used for the local http health endpoint.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "default-tls"] }
 sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
+zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

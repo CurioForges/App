@@ -12,7 +12,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -185,16 +184,8 @@ const KERNEL_REPO: &str = "NomadAnget/Atelier-Kernel";
 const MANIFEST_URL: &str = "https://github.com/NomadAnget/AtelierFree/releases/latest/download/artifacts.json";
 const BOOT_ASSET: &str = "kernel_boot.free.json";
 
-/// Spawn without a console window: a flood of cmd windows is not acceptable.
-fn hidden(program: &str) -> Command {
-    let mut command = Command::new(program);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    command
-}
+// 这里不再有任何 `Command::new`：代理、哈希、剩余空间、解压全部改成进程内完成。
+// 每拉起一个控制台程序（reg / certutil / tar / powershell）就多一次闪黑框的机会。
 
 /// 出网客户端走统一入口：真机常见"浏览器能开、启动器打不开"，是系统代理没被使用。
 fn client() -> Result<reqwest::blocking::Client, String> {
@@ -529,22 +520,37 @@ fn merge_tree(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Unpack one zip into `scratch`. Windows ships bsdtar, which reads zip; PowerShell is
-/// only the fallback for the rare machine where it is missing.
+/// Unpack one zip into `scratch`.
+///
+/// 用 `zip` 直接读，不再调系统 `tar`：`tar.exe` 是控制台程序，一次更新拉起五个，
+/// 总有环境会闪一下黑框。发行包里的 zip 全是 Deflate、没有 ZIP64，这个实现够用。
 fn unzip(file: &Path, scratch: &Path) -> Result<(), String> {
-    let status = hidden("tar")
-        .args(["-xf", &file.to_string_lossy(), "-C", &scratch.to_string_lossy()])
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-        .status();
-    if matches!(status, Ok(s) if s.success()) { return Ok(()) }
-    let script = format!(
-        "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
-        file.display(), scratch.display());
-    let fallback = hidden("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-        .status();
-    if matches!(fallback, Ok(s) if s.success()) { Ok(()) } else { Err(format!("解压 {} 失败", file.display())) }
+    let handle = fs::File::open(file).map_err(|e| format!("无法打开 {}：{e}", file.display()))?;
+    let mut archive = zip::ZipArchive::new(std::io::BufReader::new(handle))
+        .map_err(|e| format!("解压 {} 失败：{e}", file.display()))?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)
+            .map_err(|e| format!("解压 {} 失败：{e}", file.display()))?;
+        // 条目名来自外部压缩包：只接受相对路径，挡住 `..` 与绝对路径。
+        let Some(relative) = entry.enclosed_name() else {
+            let name = entry.name().map(|value| value.to_string())
+                .unwrap_or_else(|_| "<无法解码的名字>".to_string());
+            return Err(format!("压缩包里有越界路径：{name}"));
+        };
+        let target = scratch.join(relative);
+        if entry.is_dir() {
+            fs::create_dir_all(&target).map_err(|e| format!("解压 {} 失败：{e}", target.display()))?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("解压 {} 失败：{e}", parent.display()))?;
+        }
+        let mut out = fs::File::create(&target)
+            .map_err(|e| format!("解压 {} 失败：{e}", target.display()))?;
+        std::io::copy(&mut entry, &mut out)
+            .map_err(|e| format!("解压 {} 失败：{e}", target.display()))?;
+    }
+    Ok(())
 }
 
 /// Unpack one component and move its payload into the assembled tree.
@@ -1106,6 +1112,96 @@ pub async fn prewarm_only(app: AppHandle) -> Result<Option<u16>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("atelier-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    /// 解压走进程内的 `zip`：以前调 `tar.exe`，一次更新五个控制台进程。
+    #[test]
+    fn unzip_restores_payload_files() {
+        let dir = scratch_dir("unzip");
+        let archive = dir.join("sample.zip");
+        {
+            let file = fs::File::create(&archive).expect("create zip");
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            writer.add_directory("payload/", options).expect("dir entry");
+            writer.start_file("payload/hello.txt", options).expect("file entry");
+            std::io::Write::write_all(&mut writer, b"hello").expect("write");
+            writer.finish().expect("finish");
+        }
+        let out = dir.join("out");
+        fs::create_dir_all(&out).expect("out dir");
+        unzip(&archive, &out).expect("unzip");
+        assert_eq!(fs::read_to_string(out.join("payload/hello.txt")).expect("read"), "hello");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 真实发行包回归：`ATELIER_TEST_ZIP=<某个域 zip> cargo test -- --ignored unzip_real_artifact`
+    #[test]
+    #[ignore]
+    fn unzip_real_artifact() {
+        let path = std::env::var_os("ATELIER_TEST_ZIP")
+            .map(PathBuf::from)
+            .expect("ATELIER_TEST_ZIP 指向一个真实域 zip");
+        let dir = scratch_dir("unzip-real");
+        let out = dir.join("out");
+        fs::create_dir_all(&out).expect("out dir");
+        let started = Instant::now();
+        unzip(&path, &out).expect("unzip");
+        let mut files = 0usize;
+        let mut bytes = 0u64;
+        let mut stack = vec![out.clone()];
+        while let Some(current) = stack.pop() {
+            for entry in fs::read_dir(&current).expect("walk").flatten() {
+                let meta = entry.metadata().expect("meta");
+                if meta.is_dir() { stack.push(entry.path()) } else { files += 1; bytes += meta.len() }
+            }
+        }
+        assert!(files > 0, "解压后应该有文件");
+        assert!(out.join("artifact.json").is_file() || out.join("payload").is_dir(),
+            "域 zip 应该带 artifact.json 或 payload/");
+        println!("解压 {files} 个文件 / {:.1} MB，用时 {:.1}s",
+            bytes as f64 / 1e6, started.elapsed().as_secs_f64());
+        if std::env::var_os("ATELIER_TEST_KEEP").is_none() {
+            let _ = fs::remove_dir_all(&dir);
+        } else {
+            println!("保留解压目录：{}", out.display());
+        }
+    }
+
+    #[test]
+    fn unzip_refuses_paths_that_escape_the_target() {
+        let dir = scratch_dir("unzip-slip");
+        let archive = dir.join("slip.zip");
+        {
+            let file = fs::File::create(&archive).expect("create zip");
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            match writer.start_file("../escape.txt", options) {
+                Ok(()) => {
+                    std::io::Write::write_all(&mut writer, b"nope").expect("write");
+                    writer.finish().expect("finish");
+                }
+                // 写入端自己就拒绝这种名字时，没有可测的样本。
+                Err(_) => {
+                    let _ = fs::remove_dir_all(&dir);
+                    return;
+                }
+            }
+        }
+        let out = dir.join("out");
+        fs::create_dir_all(&out).expect("out dir");
+        assert!(unzip(&archive, &out).is_err());
+        assert!(!dir.join("escape.txt").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// 联网回归：确认真实发布的清单能被匿名解析，且每个组件都真的存在（HEAD 200）。
     /// 默认忽略，手动跑：`cargo test --release -- --ignored live_manifest`
