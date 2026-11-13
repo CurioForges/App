@@ -146,6 +146,7 @@ function UpdateOverlay({progress, log}) {
   const [locations, setLocations] = useState(null);
   const [moveChoice, setMoveChoice] = useState(null);
   const [moving, setMoving] = useState(false);
+  const [moveError, setMoveError] = useState('');
   const [dev, setDev] = useState(false);
 
   // Installer progress: download / verify / stage / swap each emit one event per tick.
@@ -305,13 +306,14 @@ function UpdateOverlay({progress, log}) {
       const picked = await invoke('choose_directory', {kind, current: current || null});
       if (!picked) return;
       if (picked.toLowerCase() === String(current || '').toLowerCase()) return;
+      setMoveError('');
       setMoveChoice({kind, target: picked});
     } catch (err) { setError(String(err)); }
   }
 
   async function runRelocate(mode) {
     if (!moveChoice) return;
-    setMoving(true); setMessage(''); setError('');
+    setMoving(true); setMessage(''); setError(''); setMoveError('');
     try {
       const report = moveChoice.kind === 'install'
         ? await invoke('relocate_install', {target: moveChoice.target, mode})
@@ -319,7 +321,7 @@ function UpdateOverlay({progress, log}) {
       setMoveChoice(null);
       setMessage(report?.message || '已迁移完成。');
       await refresh();
-    } catch (err) { setError(String(err)); }
+    } catch (err) { setMoveError(String(err)); }
     finally { setMoving(false); }
   }
 
@@ -399,7 +401,8 @@ function UpdateOverlay({progress, log}) {
         <div className="page-intro"><div><div className="eyebrow">ATELIER / CAPABILITIES</div><h1>域能力</h1><p>每一项是一个能力单元；这里显示它是否安装、当前是否在这个实例里运行。</p></div></div>
 
         {view === 'capabilities' && <Panel className="instance-card">
-          {progress && <UpdateOverlay progress={progress} log={updateLog}/>}
+          {/* 迁移进度画在设置弹窗里，不要再用全局覆盖层盖住界面。 */}
+          {progress && progress.job !== 'relocate' && <UpdateOverlay progress={progress} log={updateLog}/>}
           <div className="instance-head">
             <img className="variant-mark" src={freeMark} alt=""/>
             <div className="instance-title">
@@ -507,7 +510,28 @@ function UpdateOverlay({progress, log}) {
       </>}>
       <div className="relocate-body">
         <p className="setting-path relocate-target" title={moveChoice?.target}>{moveChoice?.target}</p>
-        {moveChoice?.kind === 'install' ? <>
+        {moveError ? <p className="error-text" role="alert">{moveError}</p> : null}
+        {moving && (() => {
+          const moving_ = progress?.job === 'relocate' ? progress : null;
+          const pct = typeof moving_?.percent === 'number' ? Math.max(0, Math.min(100, moving_.percent)) : null;
+          const gb = value => (value / 1e9).toFixed(1);
+          return <div className="relocate-progress" role="status" aria-live="polite">
+            <div className={`relocate-bar ${pct == null ? 'is-indeterminate' : ''}`}>
+              <span style={pct == null ? undefined : {width: `${pct}%`}}/>
+            </div>
+            <div className="relocate-stats">
+              <span>{pct == null ? (moving_?.label || '准备中…') : `${Math.round(pct)}%`}</span>
+              {moving_?.total
+                ? <span>{`${gb(moving_.done || 0)} / ${gb(moving_.total)} GB`}</span>
+                : null}
+              {typeof moving_?.rate === 'number'
+                ? <span>{`${(moving_.rate / 1048576).toFixed(1)} MB/s`}</span>
+                : null}
+            </div>
+            {moving_?.detail ? <p className="relocate-detail">{moving_.detail}</p> : null}
+          </div>;
+        })()}
+        {!moving && (moveChoice?.kind === 'install' ? <>
           <p><b>迁移</b>：把现有安装整体搬过去，引擎环境跟着走（构建好的环境会重写路径并逐个自检，
             自检不过的下次用到时重建）。新位置验证通过后才清空旧目录。</p>
           <p><b>重新安装</b>：在新位置按清单重新下载装配，不搬任何文件；完成后清空旧目录。</p>
@@ -516,7 +540,7 @@ function UpdateOverlay({progress, log}) {
           <p>把现有数据（任务记录、管线产物、数据库）搬到新位置，然后把
             <code>{locations?.install}\data</code> 指过去；旧目录迁移成功后清空。</p>
           <p className="risk">会先停止正在运行的实例，未完成的任务需要重新跑。</p>
-        </>}
+        </>)}
       </div>
     </Modal>
 

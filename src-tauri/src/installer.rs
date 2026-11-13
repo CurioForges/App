@@ -46,6 +46,15 @@ impl Progress {
         self.done = Some(done);
         self.total = total;
         self.rate = rate;
+        self.percent = total
+            .filter(|total| *total > 0)
+            .map(|total| (done as f32 / total as f32) * 100.0);
+        self
+    }
+
+    /// 换一批事件（迁移等）：界面据此决定用弹窗里的进度条还是全局覆盖层。
+    pub(crate) fn in_job(mut self, job: &'static str) -> Self {
+        self.job = job;
         self
     }
 

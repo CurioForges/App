@@ -135,6 +135,15 @@
 .relocate-body p{margin:0;font-size:12.5px;line-height:1.65;color:var(--muted)}
 .relocate-target{padding:9px 11px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface)}
 .relocate-body code{font-family:var(--mono);font-size:11.5px;color:var(--ink)}
+/* 迁移进度：一条横贯弹窗的进度条，右边跟着百分比 / 已搬字节 / 实时速度。 */
+.relocate-progress{display:grid;gap:7px}
+.relocate-bar{position:relative;height:8px;border-radius:999px;background:var(--line);overflow:hidden}
+.relocate-bar span{display:block;height:100%;border-radius:999px;background:var(--accent);transition:width .25s linear}
+.relocate-bar.is-indeterminate span{width:34%;animation:relocate-sweep 1.2s ease-in-out infinite}
+@keyframes relocate-sweep{0%{transform:translateX(-105%)}100%{transform:translateX(300%)}}
+.relocate-stats{display:flex;align-items:baseline;gap:12px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.relocate-stats span:first-child{color:var(--ink);font-weight:600}
+.relocate-detail{margin:0;font-size:11px;line-height:1.5;color:var(--muted)}
 .token-ok{font-size:11.5px;line-height:1.5;color:var(--accent)}
 
 /* 需要 gated 授权的权重：两列紧凑排，一行一个仓库，右边「去授权」。

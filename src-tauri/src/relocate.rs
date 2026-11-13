@@ -130,21 +130,41 @@ pub async fn relocate_data(app: AppHandle, target: String) -> Result<RelocateRep
 
 fn emit(app: &AppHandle, phase: &'static str, label: impl Into<String>, detail: impl Into<String>) {
     let detail = detail.into();
-    let mut progress = Progress::phase(phase, label);
-    progress = progress.with_detail(detail.clone());
+    let mut progress = Progress::phase(phase, label)
+        .in_job("relocate")
+        .with_detail(detail.clone());
     progress = progress.log(detail);
     crate::installer::emit_progress(app, progress);
 }
 
+/// 带字节数的迁移进度：界面在弹窗里画横向进度条 + 实时速度。
+fn emit_copy(app: &AppHandle, done: u64, files: u64, total: u64, rate: u64) {
+    let total = (total > 0).then_some(total);
+    let mut progress = Progress::phase("copy", "正在迁移")
+        .in_job("relocate")
+        .with_bytes(done, total, Some(rate))
+        .with_detail(format!(
+            "{:.1} / {:.1} GB · {} 个文件",
+            done as f64 / 1e9,
+            total.unwrap_or(done) as f64 / 1e9,
+            files));
+    progress = progress.log(format!("{:.1} GB", done as f64 / 1e9));
+    crate::installer::emit_progress(app, progress);
+}
+
 fn finish_done(app: &AppHandle, message: &str) {
-    let mut progress = Progress::phase("done", message.to_string());
-    progress = progress.with_detail(message.to_string());
+    let mut progress = Progress::phase("done", message.to_string())
+        .in_job("relocate")
+        .with_detail(message.to_string());
+    progress = progress.log(message.to_string());
     crate::installer::emit_progress(app, progress);
 }
 
 fn finish_failed(app: &AppHandle, message: &str) {
-    let mut progress = Progress::phase("fail", message.to_string());
-    progress = progress.with_detail(message.to_string());
+    let mut progress = Progress::phase("fail", message.to_string())
+        .in_job("relocate")
+        .with_detail(message.to_string());
+    progress = progress.log(message.to_string());
     crate::installer::emit_progress(app, progress);
 }
 
@@ -484,25 +504,62 @@ fn store_install_dir(app: &AppHandle, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// 先量一遍要搬多少字节：迁移进度条没有总数就只能转圈。
+/// 只读元数据、不打开文件；遇到联接不算它的内容（反正不会复制）。
+fn measure_tree(root: &Path) -> (u64, u64) {
+    let mut bytes = 0u64;
+    let mut files = 0u64;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else { continue };
+            if locations::is_link(&path) {
+                continue;
+            }
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file() {
+                files += 1;
+                bytes += entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            }
+        }
+    }
+    (bytes, files)
+}
+
 /// 一次真正的搬家：复制 → 补联接 → 重写环境路径 → 自检 → 确认新位置能跑。
 ///
 /// 只碰文件系统，不改设置、不删旧目录 —— 调用方在它成功之后才动旧位置，
 /// 这样任何一步失败都能原地退回。测试也直接打这一层。
-fn relocate_tree(root: &Path, target: &Path, emit_progress: &mut dyn FnMut(&'static str, String, String)) -> Result<RelocateReport, String> {
+fn relocate_tree(
+    root: &Path,
+    target: &Path,
+    progress: &mut dyn FnMut(u64, u64, u64, u64),
+) -> Result<RelocateReport, String> {
     let mut report = RelocateReport { target: target.display().to_string(), ..Default::default() };
     let mut links = Vec::new();
-    emit_progress("copy", "正在迁移安装目录".to_string(),
-        format!("{} → {}", root.display(), target.display()));
-    let mut progress = |files: u64, bytes: u64| {
-        if files % 500 == 0 {
-            emit_progress("copy", "正在迁移安装目录".to_string(),
-                format!("{files} 个文件 · {:.1} GB", bytes as f64 / 1e9));
+    progress(0, 0, 0, 0);
+    let (total_bytes, _) = measure_tree(root);
+    let mut last_tick = std::time::Instant::now();
+    let mut last_bytes = 0u64;
+    let mut copy = |files: u64, bytes: u64| {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(last_tick).as_secs_f64();
+        if elapsed < 0.25 {
+            return;
         }
+        let rate = (bytes.saturating_sub(last_bytes) as f64 / elapsed) as u64;
+        last_tick = now;
+        last_bytes = bytes;
+        progress(bytes, files, total_bytes, rate);
     };
-    if let Err(error) = copy_tree(root, target, root, &mut report, &mut links, &mut progress) {
+    if let Err(error) = copy_tree(root, target, root, &mut report, &mut links, &mut copy) {
         let _ = remove_tree(target);
         return Err(format!("迁移中断，旧安装没有改动：{error}"));
     }
+    progress(report.copied_bytes, report.copied_files, total_bytes, 0);
 
     recreate_links(target, root, &links)?;
     rewrite_environment_paths(target, root, &mut report)?;
@@ -527,9 +584,13 @@ fn move_install(app: &AppHandle, target: &Path) -> Result<RelocateReport, String
     emit(app, "relocate", "正在停止实例", root.display().to_string());
     let _ = variant_runtime::stop_sync();
 
-    let mut report = relocate_tree(&root, target, &mut |phase, label, detail| {
-        emit(app, phase, label, detail);
-    })?;
+    emit(app, "copy", "正在统计要搬多少", root.display().to_string());
+    let mut report = {
+        let mut sink = |bytes: u64, files: u64, total: u64, rate: u64| {
+            emit_copy(app, bytes, files, total, rate);
+        };
+        relocate_tree(&root, target, &mut sink)?
+    };
 
     store_install_dir(app, target)?;
     emit(app, "relocate", "正在清理旧位置", root.display().to_string());
@@ -583,17 +644,26 @@ fn move_data(app: &AppHandle, target: &Path) -> Result<RelocateReport, String> {
     let root_data = root.join(crate::contract::DATA);
     let mut report = RelocateReport { target: target.display().to_string(), ..Default::default() };
     let mut links = Vec::new();
-    emit(app, "copy", "正在迁移数据目录", format!("{} → {}", current.display(), target.display()));
+    emit(app, "copy", "正在统计要搬多少", current.display().to_string());
+    let (total_bytes, _) = measure_tree(&current);
+    let mut last_tick = std::time::Instant::now();
+    let mut last_bytes = 0u64;
     let mut progress = |files: u64, bytes: u64| {
-        if files % 500 == 0 {
-            emit(app, "copy", "正在迁移数据目录",
-                format!("{files} 个文件 · {:.1} GB", bytes as f64 / 1e9));
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(last_tick).as_secs_f64();
+        if elapsed < 0.25 {
+            return;
         }
+        let rate = (bytes.saturating_sub(last_bytes) as f64 / elapsed) as u64;
+        last_tick = now;
+        last_bytes = bytes;
+        emit_copy(app, bytes, files, total_bytes, rate);
     };
     if let Err(error) = copy_tree(&current, target, &current, &mut report, &mut links, &mut progress) {
         let _ = remove_tree(target);
         return Err(format!("迁移中断，数据没有改动：{error}"));
     }
+    emit_copy(app, report.copied_bytes, report.copied_files, total_bytes, 0);
 
     // 先把旧目录挪开（同盘改名，可回滚），再建联接。
     let backup = root.join(".data-previous");
@@ -773,8 +843,8 @@ mod tests {
         }).to_string()).expect("ledger");
 
         let mut phases = Vec::new();
-        let report = relocate_tree(&root, &target, &mut |phase, label, _| {
-            phases.push((phase, label));
+        let report = relocate_tree(&root, &target, &mut |bytes, files, total, rate| {
+            phases.push((bytes, files, total, rate));
         }).expect("relocate");
 
         assert!(target.join("atelier-kernel.exe").is_file());
@@ -790,7 +860,7 @@ mod tests {
                 .expect("ledger read")).expect("json");
         assert!(moved.get("hf4-media/windows-x86_64").is_none(), "坏掉的环境必须从账本移除");
         assert_eq!(report.rebuild, vec!["hf4-media/windows-x86_64".to_string()]);
-        assert!(phases.iter().any(|(phase, _)| *phase == "copy"));
+        assert!(phases.iter().any(|(bytes, _, total, _)| *total > 0 && *bytes <= *total));
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -802,7 +872,7 @@ mod tests {
         let target = base.join("target");
         fs::create_dir_all(&root).expect("root");
         fs::write(root.join("random.txt"), b"x").expect("file");
-        let error = relocate_tree(&root, &target, &mut |_, _, _| {}).expect_err("must fail");
+        let error = relocate_tree(&root, &target, &mut |_, _, _, _| {}).expect_err("must fail");
         assert!(error.contains("atelier-kernel.exe"), "{error}");
         assert!(!target.exists(), "失败时不该留下半个新目录");
         let _ = fs::remove_dir_all(&base);
