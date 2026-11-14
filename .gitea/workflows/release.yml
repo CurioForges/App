@@ -25,6 +25,7 @@ concurrency:
 
 jobs:
   release:
+    if: "!startsWith(github.event.head_commit.message, 'release:')"
     runs-on: windows-x64
     timeout-minutes: 60
     env:
@@ -84,7 +85,7 @@ jobs:
           git add $cargo
           if (Test-Path $conf) { git add $conf }
           git diff --cached --quiet
-          if ($LASTEXITCODE -ne 0) { git commit -q -m "release: v$v" }
+          if ($LASTEXITCODE -ne 0) { git commit -q -m "release: v$v [skip ci]" }
           git push origin HEAD
           "version files bumped to $v"
 
