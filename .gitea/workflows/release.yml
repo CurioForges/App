@@ -1,0 +1,91 @@
+name: Release Atelier
+
+# 发布桌面应用本体（公开仓库，只放启动器）。
+# 版本号取自 src-tauri/Cargo.toml，必须与输入一致。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 版本号（与 src-tauri/Cargo.toml 一致，例如 0.4.8）
+        required: true
+      publish:
+        description: 真正发布到 Gitea release
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: windows-x64
+    timeout-minutes: 60
+    env:
+      GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITEA_URL: https://atelier.hurcaguari.top
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check version matches input
+        shell: pwsh
+        run: |
+          $line = Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"$' | Select-Object -First 1
+          $cargo = $line.Matches[0].Groups[1].Value
+          "cargo=$cargo" >> $env:GITHUB_ENV
+          if ($cargo -ne "${{ inputs.version }}") { throw "Cargo.toml 版本 $cargo 与输入 ${{ inputs.version }} 不一致" }
+          "toolchain: node $((& node --version) 2>&1) / cargo $((& cargo --version) 2>&1)"
+
+      - name: Install frontend deps
+        shell: pwsh
+        run: |
+          if (Test-Path package-lock.json) { npm ci } else { npm install }
+          if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+
+      - name: Build app
+        shell: pwsh
+        run: |
+          npm run tauri build -- --no-bundle
+          if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $exe = 'src-tauri/target/release/atelier.exe'
+          if (-not (Test-Path $exe)) { throw "构建产物缺失: $exe" }
+          Copy-Item $exe 'atelier.exe' -Force
+          $hash = (Get-FileHash 'atelier.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  atelier.exe" | Set-Content SHA256SUMS.txt -Encoding ASCII
+          "atelier.exe $([math]::Round((Get-Item 'atelier.exe').Length/1MB,1)) MB"
+          Get-Content SHA256SUMS.txt
+
+      - name: Publish release
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        run: |
+          $tag = "v${{ inputs.version }}"
+          $token = $env:GITEA_TOKEN
+          $headers = @{ Authorization = "token $token" }
+          $api = "$env:GITEA_URL/api/v1/repos/Atelier/Atelier"
+          $rel = $null
+          try { $rel = Invoke-RestMethod -Uri "$api/releases/tags/$tag" -Headers $headers -TimeoutSec 30 } catch { $rel = $null }
+          if (-not $rel) {
+            $body = @{ tag_name = $tag; name = "Atelier $tag"; body = "Atelier launcher $tag"; draft = $false; prerelease = $false; target_commitish = 'master' } | ConvertTo-Json -Compress
+            $rel = Invoke-RestMethod -Uri "$api/releases" -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 60
+          }
+          foreach ($f in @('atelier.exe', 'SHA256SUMS.txt')) {
+            $rel = Invoke-RestMethod -Uri "$api/releases/tags/$tag" -Headers $headers -TimeoutSec 30
+            $existing = $rel.assets | Where-Object { $_.name -eq $f }
+            if ($existing) { Invoke-RestMethod -Uri "$api/releases/$($rel.id)/assets/$($existing.id)" -Method Delete -Headers $headers -TimeoutSec 30 | Out-Null }
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $f).Path)
+            $boundary = [guid]::NewGuid().ToString()
+            $enc = [Text.Encoding]::UTF8
+            $head = "--$boundary`r`nContent-Disposition: form-data; name=`"attachment`"; filename=`"$f`"`r`nContent-Type: application/octet-stream`r`n`r`n"
+            $tail = "`r`n--$boundary--`r`n"
+            $ms = New-Object System.IO.MemoryStream
+            $hb = $enc.GetBytes($head); $tb = $enc.GetBytes($tail)
+            $ms.Write($hb, 0, $hb.Length); $ms.Write($bytes, 0, $bytes.Length); $ms.Write($tb, 0, $tb.Length)
+            Invoke-RestMethod -Uri "$api/releases/$($rel.id)/assets?name=$f" -Method Post -Headers $headers -ContentType "multipart/form-data; boundary=$boundary" -Body $ms.ToArray() -TimeoutSec 900 | Out-Null
+            "  uploaded $f"
+          }
+          "release $tag ready"
