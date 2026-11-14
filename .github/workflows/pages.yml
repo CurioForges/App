@@ -3,7 +3,7 @@ name: Pages
 # 产品页：site/ 目录直接发布到 GitHub Pages，不需要构建步骤。
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths: ['site/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
