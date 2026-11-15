@@ -50,6 +50,6 @@ pub fn assembly_path() -> &'static str {
     "/api/assembly"
 }
 
-/// The four domains every Free distribution declares. The launcher treats the
-/// workbench as ready only when all of them report `active`.
-pub const DOMAINS: [&str; 4] = ["web", "scheduler", "pipelines", "engines"];
+/// 工作台界面所在的域。启动器靠它找到 HTTP 端口，不代表域清单是固定的：
+/// 要等哪些域起来，读的是实际写下的 `kernel_boot.json`（见 `bootspec::domain_ids`）。
+pub const WORKBENCH_DOMAIN: &str = "web";

@@ -67,17 +67,7 @@ pub struct Capabilities {
 }
 
 fn declared_domains(config: &Path) -> Vec<String> {
-    let Ok(bytes) = fs::read(config) else { return Vec::new() };
-    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else { return Vec::new() };
-    value
-        .get("domains")
-        .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| row.get("domain_id").and_then(Value::as_str).map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
+    crate::bootspec::domain_ids(config)
 }
 
 /// Domain ids the running kernel reports, with their stopped flag.

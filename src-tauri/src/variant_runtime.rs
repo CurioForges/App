@@ -252,6 +252,19 @@ fn variant_environment(root: &Path, models: &Path, token: Option<&str>) -> Vec<(
         (crate::contract::ENV_ROOT.to_string(), root.as_os_str().to_os_string()),
         (crate::contract::ENV_MODELS_DIR.to_string(), models.as_os_str().to_os_string()),
     ];
+    // 冻结的 Python 域在打包时把 pydantic 等排除出编译（`--nofollow-import-to`），
+    // 运行期只能从 `runtime-site-packages` 取。engines 的入口模板自己插了这个路径，
+    // scheduler / pipelines 的入口没有——所以由启动器统一供给，三个域都不再依赖模板写法。
+    let site_packages = root.join("runtime-site-packages");
+    if site_packages.is_dir() {
+        let mut paths = vec![site_packages];
+        if let Some(existing) = env::var_os("PYTHONPATH") {
+            paths.extend(env::split_paths(&existing));
+        }
+        if let Ok(joined) = env::join_paths(paths) {
+            values.push(("PYTHONPATH".to_string(), joined));
+        }
+    }
     if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
         for name in crate::contract::ENV_HF_TOKEN {
             values.push((name.to_string(), std::ffi::OsString::from(token)));
@@ -281,6 +294,11 @@ pub async fn variant_info() -> Result<VariantInfo, String> {
 // Keep chosen ports reserved until all bindings have been assigned.
 fn assign_ports(config: &mut Value) -> Result<(u16, Vec<TcpListener>), String> {
     let domains = config.get_mut("domains").and_then(Value::as_array_mut).ok_or("变体配置缺少 domains")?;
+    // 先把域清单抄一份：后面要可变借用，错误信息里又要用它说清"当前装了什么"。
+    let available: Vec<String> = domains
+        .iter()
+        .filter_map(|domain| domain.get("domain_id").and_then(Value::as_str).map(str::to_string))
+        .collect();
     let mut reservations = Vec::new();
     let mut web = None;
     for domain in domains {
@@ -290,7 +308,9 @@ fn assign_ports(config: &mut Value) -> Result<(u16, Vec<TcpListener>), String> {
                 let name = port.get("name").and_then(Value::as_str).unwrap_or("").to_owned();
                 let listen = port.get("listen").and_then(Value::as_str).ok_or("端口配置缺少 listen")?;
                 let address: SocketAddr = listen.parse().map_err(|e| format!("端口地址无效：{e}"))?;
-                let listener = TcpListener::bind(SocketAddr::new(address.ip(), 0)).map_err(|e| format!("无法分配端口：{e}"))?;
+                // 让系统挑一个空闲端口，先占住，等真正交给内核时再释放。
+                let listener = TcpListener::bind(SocketAddr::new(address.ip(), 0))
+                    .map_err(|e| format!("无法分配端口：{e}"))?;
                 let allocated = listener.local_addr().map_err(|e| e.to_string())?;
                 if is_web && name == "http" { web = Some(allocated.port()); }
                 port["listen"] = Value::String(allocated.to_string());
@@ -298,7 +318,18 @@ fn assign_ports(config: &mut Value) -> Result<(u16, Vec<TcpListener>), String> {
             }
         }
     }
-    Ok((web.ok_or("变体未声明 Web HTTP 端口")?, reservations))
+    let port = web.ok_or_else(|| {
+        let missing_web = !available.iter().any(|id| id == "web");
+        if missing_web {
+            format!(
+                "启动配置里没有 web 域，所以没有工作台端口可分配（当前域：{}）。这一版 web 包可能不含可执行文件。",
+                if available.is_empty() { "无".to_string() } else { available.join("、") }
+            )
+        } else {
+            "web 域在启动配置里没有声明 http 端口".to_string()
+        }
+    })?;
+    Ok((port, reservations))
 }
 fn prepare_binding(dir: &Path) -> Result<(PathBuf, u16, Vec<TcpListener>), String> {
     let source = fs::read(dir.join("kernel_boot.json")).map_err(|e| format!("无法读取变体配置：{e}"))?;
@@ -313,7 +344,7 @@ pub async fn open_workbench(online_port: Option<u16>, stop_foreign: Option<bool>
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(port) = online_port { return Ok(port); }
         let dir = install_dir()?;
-        let port = match running_kernel(&dir)? {
+        let (port, expected) = match running_kernel(&dir)? {
             Some(kernel) => return kernel.port.ok_or("变体正在启动，暂时无法读取端口绑定".into()),
             None => {
                 // One instance at a time. Stopping another installation is the user's
@@ -334,6 +365,9 @@ pub async fn open_workbench(online_port: Option<u16>, stop_foreign: Option<bool>
                     let _ = crate::settings::save(&settings);
                 }
                 let (config, port, reservations) = prepare_binding(&dir)?;
+                // 要等哪些域：读刚写下的启动配置，而不是启动器自己记的清单。
+                // 装了几个域就等几个，多装少装都不影响判定。
+                let expected = crate::bootspec::domain_ids(&config);
                 // The three user choices are applied here, and only here: `data/` is a
                 // junction inside the root, models are an environment override the
                 // engines domain documents, and the credential is injected through the
@@ -361,7 +395,7 @@ pub async fn open_workbench(online_port: Option<u16>, stop_foreign: Option<bool>
                 }
                 drop(reservations); // The kernel must bind the selected ports itself.
                 command.spawn().map_err(|e| format!("无法启动 Atelier Free：{e}"))?;
-                port
+                (port, expected)
             }
         };
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -376,23 +410,25 @@ pub async fn open_workbench(online_port: Option<u16>, stop_foreign: Option<bool>
         if !reachable {
             return Err("工作台启动超时，请检查变体运行状态。".to_string());
         }
-        // A listening port is not the same as a usable workbench: wait for the four
-        // domains to report active on the distribution's own health endpoint. This is
-        // the contract the handoff document names, and it is what the acceptance
-        // checklist means by "四域 active".
-        let deadline = Instant::now() + Duration::from_secs(90);
-        while Instant::now() < deadline {
-            if all_domains_active(port) {
-                break;
+        // A listening port is not the same as a usable workbench: wait until every domain
+        // the startup configuration declares reports active on the distribution's own
+        // health endpoint. The list comes from the config we just wrote, so an installation
+        // with three or seven domains is judged by its own composition.
+        if !expected.is_empty() {
+            let deadline = Instant::now() + Duration::from_secs(90);
+            while Instant::now() < deadline {
+                if all_domains_active(port, &expected) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(750));
             }
-            thread::sleep(Duration::from_millis(750));
         }
         Ok(port)
     }).await.map_err(|e| e.to_string())?
 }
 
-/// True once every domain the distribution declares reports `active`.
-fn all_domains_active(port: u16) -> bool {
+/// True once every expected domain reports `active`.
+fn all_domains_active(port: u16, expected: &[String]) -> bool {
     let Ok(client) = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(5))
@@ -408,9 +444,10 @@ fn all_domains_active(port: u16) -> bool {
     }
     let Ok(body) = response.json::<Value>() else { return false };
     let Some(domains) = body.get("domains").and_then(Value::as_array) else { return false };
-    crate::contract::DOMAINS.iter().all(|id| {
+    expected.iter().all(|id| {
         domains.iter().any(|domain| {
-            domain.get("domain_id").and_then(Value::as_str) == Some(id)
+            domain.get("domain_id").and_then(Value::as_str).map(|value| value.eq_ignore_ascii_case(id))
+                == Some(true)
                 && domain.get("status").and_then(Value::as_str).map(|status| status.eq_ignore_ascii_case("active")) == Some(true)
         })
     })
