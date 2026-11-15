@@ -1,9 +1,10 @@
 //! 启动器自更新。
 //!
 //! 与发行包更新是**两条独立的流**:这里换的是启动器自己的 exe(`target/release/atelier.exe`),
-//! 不是 `%LOCALAPPDATA%\AtelierFree` 里的发行包。版本源是公开仓 `NomadAnget/Atelier` 的 release,
-//! 匿名可拉,不需要 token。
+//! 不是 `%LOCALAPPDATA%\AtelierFree` 里的发行包。
 //!
+//! 版本源在**自建 Gitea**（`Atelier/Atelier` 的 release,匿名可读）——真源只有这一处。
+//! 下载按镜像拓扑走:**CNB 优先 → GitLab 其次 → Gitea 兜底**,和发行包安装同一个顺序。
 //! 换文件不能在自身进程里做(Windows 会锁住正在运行的 exe),所以写一个 `apply-update.ps1`:
 //! 等本进程退出 → 旧 exe 改名 `.old` → 新 exe 改名正式名 → 启动 → 失败还原。
 
@@ -11,7 +12,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const REPO: &str = "NomadAnget/Atelier";
+/// 版本真源（自建 Gitea）。
+const REPO: &str = "Atelier/Atelier";
+const GITEA: &str = "https://atelier.hurcaguari.top";
+/// 下载镜像：CNB 优先 → GitLab → Gitea。
+const CNB_REPO: &str = "Atelier-2026/App";
+const GITLAB_PROJECT: &str = "88933569";
+const GITLAB_PACKAGE: &str = "atelier-app";
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,8 +92,9 @@ fn is_newer(latest: &str, current: &str) -> bool {
 
 pub fn check() -> Result<SelfUpdate, String> {
     let current = current_version();
-    let api = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    // 还没发过 release 时 API 返回 404:这不是错误,是"暂时没有新版本"。
+    // Gitea 的 release 列表：真源在这里，`?limit=1` 就是最新一条。
+    let api = format!("{GITEA}/api/v1/repos/{REPO}/releases?limit=1");
+    // 还没发过 release 时列表为空:这不是错误,是"暂时没有新版本"。
     let body = match http_text(&api) {
         Ok(text) => text,
         Err(error) if error.contains("404") => {
@@ -101,12 +109,24 @@ pub fn check() -> Result<SelfUpdate, String> {
     };
     let value: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| format!("无法解析版本信息：{e}"))?;
-    let latest = value.get("tag_name").and_then(|tag| tag.as_str()).unwrap_or("")
+    // `releases?limit=1` 给的是数组；取第一条。
+    let first = match value.as_array().and_then(|list| list.first()) {
+        Some(first) => first,
+        None => {
+            return Ok(SelfUpdate {
+                current: current.clone(),
+                latest: current,
+                available: false,
+                notes: "尚未发布任何版本".into(),
+            })
+        }
+    };
+    let latest = first.get("tag_name").and_then(|tag| tag.as_str()).unwrap_or("")
         .trim().trim_start_matches('v').to_string();
     if latest.is_empty() {
         return Err("版本信息里没有 tag".into());
     }
-    let notes = value.get("body").and_then(|body| body.as_str()).unwrap_or("");
+    let notes = first.get("body").and_then(|body| body.as_str()).unwrap_or("");
     Ok(SelfUpdate {
         available: is_newer(&latest, &current),
         latest,
@@ -115,28 +135,60 @@ pub fn check() -> Result<SelfUpdate, String> {
     })
 }
 
-/// 下载新 exe 到 `updates/`,并与同 release 的 `SHA256SUMS.txt` 比对。
+/// 同一个文件在各镜像上的候选地址，按优先级排列：CNB → GitLab → Gitea。
+fn candidates(tag: &str, file: &str) -> Vec<String> {
+    let release = format!("v{tag}");
+    vec![
+        format!("https://cnb.cool/{CNB_REPO}/-/releases/download/{release}/{file}"),
+        format!("https://gitlab.com/api/v4/projects/{GITLAB_PROJECT}/packages/generic/{GITLAB_PACKAGE}/{tag}/{file}"),
+        format!("{GITEA}/{REPO}/releases/download/{release}/{file}"),
+    ]
+}
+
+fn first_text(urls: &[String]) -> Option<String> {
+    urls.iter().find_map(|url| http_text(url).ok())
+}
+
+fn first_download(urls: &[String], target: &Path) -> Result<(), String> {
+    let mut last = String::new();
+    for url in urls {
+        let host = url.split('/').nth(2).unwrap_or("").to_string();
+        match download_to(url, target) {
+            Ok(()) => return Ok(()),
+            Err(error) => last = format!("{host}: {error}"),
+        }
+    }
+    Err(last)
+}
+
+/// 下载新 exe 到 `updates/`,并与 `SHA256SUMS.txt` 比对。
+///
+/// 顺序与安装器一致：CNB → GitLab → Gitea。校验值取自能读到的第一个 `SHA256SUMS.txt`，
+/// **拿不到就拒绝更新**——以前是"拿不到就当通过"，等于把逐字节校验变成了摆设。
 pub fn download(tag: &str) -> Result<PathBuf, String> {
     let dir = updates_dir()?;
     let target = dir.join(format!("atelier-{tag}.new.exe"));
     let _ = fs::remove_file(&target);
-    let release = format!("v{tag}");
-    download_to(&format!("https://github.com/{REPO}/releases/download/{release}/atelier.exe"), &target)?;
 
-    // 校验:release 里若有 SHA256SUMS.txt 就必须对得上。
-    let sums_url = format!("https://github.com/{REPO}/releases/download/{release}/SHA256SUMS.txt");
-    if let Ok(sums) = http_text(&sums_url) {
-        let expected = sums.lines()
-            .find(|line| line.contains("atelier.exe"))
-            .and_then(|line| line.split_whitespace().next())
-            .map(|hex| hex.to_ascii_lowercase());
-        if let Some(expected) = expected {
-            let actual = crate::installer::sha256_of(&target)?;
-            if expected != actual {
-                let _ = fs::remove_file(&target);
-                return Err(format!("新版本校验失败：{} ≠ {}", &actual[..12], &expected[..12.min(expected.len())]));
-            }
-        }
+    let sums = first_text(&candidates(tag, "SHA256SUMS.txt"))
+        .ok_or_else(|| "三个镜像都取不到 SHA256SUMS.txt，拒绝在无法校验的情况下更新".to_string())?;
+    let expected = sums
+        .lines()
+        .find(|line| line.contains("atelier.exe"))
+        .and_then(|line| line.split_whitespace().next())
+        .map(|hex| hex.trim().to_ascii_lowercase())
+        .filter(|hex| hex.len() == 64)
+        .ok_or_else(|| "SHA256SUMS.txt 里没有 atelier.exe 的校验值".to_string())?;
+
+    first_download(&candidates(tag, "atelier.exe"), &target)?;
+    let actual = crate::installer::sha256_of(&target)?;
+    if expected != actual {
+        let _ = fs::remove_file(&target);
+        return Err(format!(
+            "新版本校验失败：{} ≠ {}（已删除下载内容）",
+            &actual[..12.min(actual.len())],
+            &expected[..12.min(expected.len())]
+        ));
     }
     Ok(target)
 }
@@ -230,6 +282,20 @@ pub async fn apply_self_update(app: tauri::AppHandle, tag: String) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 自更新也走同一条镜像拓扑：CNB 优先 → GitLab → Gitea。
+    /// 版本真源在自建 Gitea，但**下载**优先走 CNB——顺序写错的话，国内用户每次更新都要等很久。
+    #[test]
+    fn update_candidates_follow_cnb_gitlab_gitea_order() {
+        let urls = candidates("0.0.3", "atelier.exe");
+        assert_eq!(urls.len(), 3, "{urls:?}");
+        assert!(urls[0].starts_with("https://cnb.cool/Atelier-2026/App/-/releases/download/v0.0.3/"), "{}", urls[0]);
+        assert!(urls[1].starts_with("https://gitlab.com/api/v4/projects/88933569/packages/generic/atelier-app/0.0.3/"), "{}", urls[1]);
+        assert!(urls[2].starts_with("https://atelier.hurcaguari.top/Atelier/Atelier/releases/download/v0.0.3/"), "{}", urls[2]);
+        for url in &urls {
+            assert!(url.ends_with("/atelier.exe"), "{url}");
+        }
+    }
 
     /// 换文件脚本必须是 **UTF-8 with BOM 且正文纯 ASCII**：
     /// PowerShell 5.1 没有 BOM 就按 ANSI 读，中文注释会把整个脚本变成语法错误；

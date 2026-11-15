@@ -105,6 +105,8 @@ jobs:
           Copy-Item $exe 'atelier.exe' -Force
           $h = (Get-FileHash 'atelier.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           "$h  atelier.exe" | Set-Content SHA256SUMS.txt -Encoding ASCII
+          # 旁挂与模型仓/域包保持同一格式：<资产>.sha256 里只放裸 hex。
+          [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'atelier.exe.sha256'), $h, (New-Object System.Text.UTF8Encoding($false)))
           "atelier.exe $([math]::Round((Get-Item 'atelier.exe').Length/1MB,1)) MB"
 
       - name: Create tag and release
@@ -117,7 +119,7 @@ jobs:
           try { Invoke-RestMethod -Uri "$api/tags" -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($tagBody)) -TimeoutSec 60 | Out-Null; "tag $env:TAG created" } catch { "tag: $($_.Exception.Message)" }
           $relBody = @{ tag_name = $env:TAG; name = "Atelier $env:TAG"; body = $notes; draft = $false; prerelease = $false } | ConvertTo-Json -Compress
           $rel = Invoke-RestMethod -Uri "$api/releases" -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($relBody)) -TimeoutSec 60
-          foreach ($f in @('atelier.exe', 'SHA256SUMS.txt')) {
+          foreach ($f in @('atelier.exe', 'atelier.exe.sha256', 'SHA256SUMS.txt')) {
             $name = $f
             $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $f).Path)
             $boundary = [guid]::NewGuid().ToString()
