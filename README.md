@@ -12,7 +12,6 @@
   <img alt="许可" src="https://img.shields.io/badge/许可-专有使用-6B6B6B?style=flat-square">
 </p>
 
-<p align="center">产品页：<a href="https://nomadanget.github.io/Atelier/">nomadanget.github.io/Atelier</a></p>
 
 ---
 
